@@ -162,6 +162,7 @@ cython_debug/
 # lab files
 *.mat
 *.pth
+*.DS_Store
 331_fine_tune_SAM_mito.ipynb
 
 # lab folders
