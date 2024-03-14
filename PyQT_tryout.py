@@ -8,120 +8,106 @@ import os
 import platform
 import matplotlib.pyplot as plt
 import cv2
+import torch
+import torchvision
 
 from segment_anything import sam_model_registry, SamAutomaticMaskGenerator, SamPredictor
 
 from PyQt5.QtWidgets import QApplication, QLabel, QMainWindow, QWidget, QVBoxLayout
-from PyQt5.QtGui import QImage, QPixmap
+from PyQt5.QtGui import QImage, QPixmap, QPainter
 from PyQt5.QtCore import Qt
 
-
-# Global Variables
-DEVICE = 'cuda' if (platform.system() == "Windows") else 'cpu'
-SAM_CHECKPOINT = 'sam_vit_h_4b8939.pth'
-MODEL_TYPE = 'vit_h'
-
-# Functions for SAM (predictor_tryout.ipynb)
-def supportTest(DEVICE):
-    import torch
-    import torchvision
-    print("PyTorch version:", torch.__version__)
-    print("Torchvision version:", torchvision.__version__)
-    print("CUDA is available:", torch.cuda.is_available())
-    print("Device:", torch.cuda.get_device_name()) if (DEVICE == 'cuda') else print("Device: CPU")
-supportTest(DEVICE)
-
-def show_mask(mask, ax, random_color=False):
-    if random_color:
-        color = np.concatenate([np.random.random(3), np.array([0.6])], axis=0)
-    else:
-        color = np.array([30/255, 144/255, 255/255, 0.6])
-    h, w = mask.shape[-2:]
-    mask_image = mask.reshape(h, w, 1) * color.reshape(1, 1, -1)
-    ax.imshow(mask_image)
+class ImageOverlayWidget(QWidget):
+    def __init__(self, parent=None):
+        super(ImageOverlayWidget, self).__init__(parent)
+        self.opacity = 0.5
     
-def show_points(coords, labels, ax, marker_size=375):
-    pos_points = coords[labels==1]
-    neg_points = coords[labels==0]
-    ax.scatter(pos_points[:, 0], pos_points[:, 1], color='green', marker='*', s=marker_size, edgecolor='white', linewidth=1.25)
-    ax.scatter(neg_points[:, 0], neg_points[:, 1], color='red', marker='*', s=marker_size, edgecolor='white', linewidth=1.25)   
+    def set_bot_pixmap(self, path):
+        self.bottomPixmap = QPixmap(path)
+        self.update()
+    def set_top_pixmap(self, qimage):
+        self.topPixmap = QPixmap.fromImage(qimage)
+        self.update()
+    def set_opacity(self, opacity):
+        self.opacity = opacity
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.drawPixmap(self.rect(), self.bottomPixmap)
+        painter.setOpacity(self.opacity)
+        painter.drawPixmap(self.rect(), self.topPixmap)
+
+class FISH_APP(QMainWindow):
+    # Global Variables
+    SAM_CHECKPOINT = 'sam_vit_h_4b8939.pth'
+    MODEL_TYPE = 'vit_h'
+    DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+    TITLE = "FISH APP"
+    IMG = "img/test_1.jpg"
+
+    def __init__(self, debug=False):
+        super().__init__()
+        self.setWindowTitle(self.TITLE)
+        self.sam = None
+        self.last_load_size = None
+        self.cuda_supportive_test() if debug else None
+        self.init_sam()
+
+        self.overlay = ImageOverlayWidget()
+        self.run()
+        self.setCentralWidget(self.overlay)
+        self.overlay.update()
+        self.update()
     
-def show_box(box, ax):
-    x0, y0 = box[0], box[1]
-    w, h = box[2] - box[0], box[3] - box[1]
-    ax.add_patch(plt.Rectangle((x0, y0), w, h, edgecolor='green', facecolor=(0,0,0,0), lw=2))
+    def cuda_supportive_test(self) -> None:
+        print("PyTorch version:", torch.__version__)
+        print("Torchvision version:", torchvision.__version__)
+        print("CUDA is available:", torch.cuda.is_available())
+        print("Device:", torch.cuda.get_device_name()) if (self.DEVICE == 'cuda') else print("Device: CPU")
+    
+    def init_sam(self) -> None:
+        self.sam = sam_model_registry[self.MODEL_TYPE](checkpoint=self.SAM_CHECKPOINT)
+        self.sam.to(device=self.DEVICE)
+    
+    def load_image(self, path) -> np.ndarray:
+        image = cv2.imread(path)
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        self.resize(image.shape[1], image.shape[0])
+        return image
+    
+    def sam_amg_predict(self, image: np.ndarray) -> list[dict]:
+        mask_generator = SamAutomaticMaskGenerator(self.sam)
+        masks = mask_generator.generate(image)
+        return masks
+    
+    def mask_to_matrix(self, masks) -> np.ndarray:
+        img = np.ones((2048, 2048, 4), dtype=np.float32)
+        img[:, :, 3] = 0
+        for single_cell in masks:
+            m = single_cell['segmentation']
+            color_mask = np.concatenate([np.random.random(3).astype(np.float32), [0.35]]).astype(np.float32)
+            img[m] = color_mask
+        return img
+    
+    def matrix_to_qimage(self, matrix) -> QImage:
+        if matrix.dtype == np.float32:
+            matrix = (matrix * 255).astype(np.uint8)
+        height, width, channels = matrix.shape
+        bytes_per_line = width * channels
+        return QImage(matrix.data, width, height, bytes_per_line, QImage.Format_RGBA8888)
+    
+    def run(self) -> None:
+        masks = self.sam_amg_predict(self.load_image(self.IMG))
+        img = self.mask_to_matrix(masks)
+        qimage = self.matrix_to_qimage(img)
 
-def show_anns(anns):
-    if len(anns) == 0:
-        return
-    sorted_anns = sorted(anns, key=(lambda x: x['area']), reverse=True)
-    ax = plt.gca()
-    ax.set_autoscale_on(False)
-
-    img = np.ones((sorted_anns[0]['segmentation'].shape[0], sorted_anns[0]['segmentation'].shape[1], 4))
-    img[:,:,3] = 0
-    for ann in sorted_anns:
-        m = ann['segmentation']
-        color_mask = np.concatenate([np.random.random(3), [0.35]])
-        img[m] = color_mask
-    ax.imshow(img)
-
-# Functions for PyQT (new)
-def matrix_to_qimage(matrix):
-    # Assuming matrix is a 3D numpy array with shape (height, width, 4) and dtype=np.float32 or np.uint8
-    if matrix.dtype == np.float32:  # Assuming your array is in [0, 1] for floats
-        matrix = (matrix * 255).astype(np.uint8)
-    height, width, channels = matrix.shape
-    bytes_per_line = width * channels  # 4 bytes per pixel for RGBA
-    return QImage(matrix.data, width, height, bytes_per_line, QImage.Format_RGBA8888)
-
-def display_image(qimage):
-    app = QApplication(sys.argv)
-
-    # Create a QMainWindow or any other QWidget as the main window
-    window = QMainWindow()
-    window.setWindowTitle('Mask Display')
-
-    # Use a QLabel to display the image
-    label = QLabel()
-    label.setPixmap(QPixmap.fromImage(qimage))
-
-    # Set the QLabel as the central widget of the QMainWindow
-    window.setCentralWidget(label)
-
-    window.show()
-    sys.exit(app.exec_())
-
-def main():
-    sam_checkpoint = SAM_CHECKPOINT
-    model_type = MODEL_TYPE
-    sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
-    sam.to(device=DEVICE)
-
-    # Read image from folder
-    image = cv2.imread('img/test_1.jpg')
-    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    print(image.shape)
-
-    # Predict
-    mask_generator = SamAutomaticMaskGenerator(sam)
-    masks = mask_generator.generate(image)
-
-    sorted_masks = sorted(masks, key=(lambda x: x['area']), reverse=True)
-    # Ensure the dtype is float to accommodate the color values and alpha channel
-    img = np.ones((sorted_masks[0]['segmentation'].shape[0], sorted_masks[0]['segmentation'].shape[1], 4), dtype=np.float32)
-    img[:, :, 3] = 0  # Set alpha channel to fully transparent
-
-    for ann in sorted_masks:
-        m = ann['segmentation']
-        # Ensure the color_mask is an array of floats for the RGBA channels
-        color_mask = np.concatenate([np.random.random(3).astype(np.float32), [0.35]]).astype(np.float32)
-        img[m] = color_mask
-
-    print(img.shape)  # (2048, 2048, 4), confirming the final image shape
-
-    qimage = matrix_to_qimage(img)
-    display_image(qimage)
+        self.overlay.set_bot_pixmap(self.IMG)
+        self.overlay.set_top_pixmap(qimage)
+        self.overlay.set_opacity(0.3)
 
 if __name__ == "__main__":
-    main()
+    app = QApplication(sys.argv)
+    main = FISH_APP(debug=False)
+    main.show()
+    sys.exit(app.exec_())
