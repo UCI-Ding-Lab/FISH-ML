@@ -86,7 +86,7 @@ class FISH_APP(QMainWindow):
         img[:, :, 3] = 0
         for single_cell in masks:
             m = single_cell['segmentation']
-            color_mask = np.concatenate([np.random.random(3).astype(np.float32), [0.35]]).astype(np.float32)
+            color_mask = np.concatenate([np.random.random(3).astype(np.float32), [1]]).astype(np.float32)
             img[m] = color_mask
         return img
     
@@ -104,7 +104,7 @@ class FISH_APP(QMainWindow):
 
         self.overlay.set_bot_pixmap(self.IMG)
         self.overlay.set_top_pixmap(qimage)
-        self.overlay.set_opacity(0.3)
+        self.overlay.set_opacity(1)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
