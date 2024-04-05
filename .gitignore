@@ -168,3 +168,9 @@ cython_debug/
 # lab folders
 /60min_tiff
 /segment_anything
+/1-50_Hong
+/51-100_Hong
+/101-150_Hong
+/151-200_Hong
+/201-250_Hong
+/251-300_Hong
