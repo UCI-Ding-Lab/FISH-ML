@@ -3,7 +3,7 @@ import pathlib
 import numpy as np
 import matplotlib.pyplot as plt
 
-with Image.open(pathlib.Path("151-200_Hong/MAX_KO2_w1-359 DAPI_s055.tif")) as img:
+with Image.open(pathlib.Path("151-200_Hong/MAX_KO2_w1-359 DAPI_s058.tif")) as img:
         image_array = np.array(img)
         exposure_factor = 30
         exposed_image_array = np.clip(image_array * exposure_factor, 0, 65535)
