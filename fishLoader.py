@@ -6,24 +6,26 @@ import scipy.io
 import tifffile
 import os
 
-def plot_all_cells_in_mask(all_cells_in_mask_1): 
+
+def plot_all_cells_in_mask(all_cells_in_mask_1):
     np.set_printoptions(threshold=np.inf)
     num_cells = len(all_cells_in_mask_1)
 
     # Create subplots: adjust the grid size as needed
     cols = int(np.ceil(np.sqrt(num_cells)))  # For a square-ish layout
     rows = int(np.ceil(num_cells / cols))
-    _, axs = plt.subplots(rows, cols, figsize=(cols*4, rows*4))
+    _, axs = plt.subplots(rows, cols, figsize=(cols * 4, rows * 4))
 
     for i, cell_mask in enumerate(all_cells_in_mask_1):
         ax = axs.flat[i]
-        ax.imshow(cell_mask[0], cmap='gray')
-        ax.axis('off')  # Hide axis
+        ax.imshow(cell_mask[0], cmap="gray")
+        ax.axis("off")  # Hide axis
 
-    for i in range(num_cells, rows*cols):
-        axs.flat[i].axis('off')
+    for i in range(num_cells, rows * cols):
+        axs.flat[i].axis("off")
 
     plt.show()
+
 
 # Func to get all cells' position and store them in a list of tuples(x,y)
 def get_all_cells_pos(all_cells_in_mask_1):
@@ -36,48 +38,56 @@ def get_all_cells_pos(all_cells_in_mask_1):
 
     return all_cell_positions
 
+
 def patch_cells_into_picture_inc(all_cells_in_mask_1, all_cell_positions):
     picture = np.zeros((2048, 2048), dtype=int)
-    
+
     for cell_mask, pos in zip(all_cells_in_mask_1, all_cell_positions):
         mask = cell_mask[0]  # Extract the mask (assuming it's at index 0)
         if np.all(mask == 0):  # Skip if the mask is all zeros
             continue
-        
+
         y_pos, x_pos = pos  # Extract the y and x positions
         mask_height, mask_width = mask.shape
         binary_mask = mask > 0
         y_end, x_end = min(y_pos + mask_height, 2048), min(x_pos + mask_width, 2048)
-        picture[y_pos:y_end, x_pos:x_end] |= binary_mask[:y_end-y_pos, :x_end-x_pos]
-    
+        picture[y_pos:y_end, x_pos:x_end] |= binary_mask[
+            : y_end - y_pos, : x_end - x_pos
+        ]
+
     return picture
+
 
 # Func to patch individual cell mask into a whole picture
 def patch_cells_into_picture_exc(all_cells_in_mask_1, all_cell_positions):
     picture = np.zeros((2048, 2048), dtype=int)
-    
+
     for cell_mask, pos in zip(all_cells_in_mask_1, all_cell_positions):
         mask = cell_mask[0]  # Extract the mask (assuming it's at index 0)
         if np.all(mask == 0):  # Skip if the mask is all zeros
             continue
-        
+
         y_pos, x_pos = pos  # Extract the y and x positions
         mask_height, mask_width = mask.shape
         binary_mask = mask > 0
         y_end, x_end = min(y_pos + mask_height, 2048), min(x_pos + mask_width, 2048)
-        picture[y_pos:y_end, x_pos:x_end] |= binary_mask[:y_end-y_pos, :x_end-x_pos]
-    
+        picture[y_pos:y_end, x_pos:x_end] |= binary_mask[
+            : y_end - y_pos, : x_end - x_pos
+        ]
+
     # Check if the picture is all zeros after processing all cells
     if np.all(picture == 0):
         return None  # Or any other indicator that signifies an empty picture
-    
+
     return picture
+
 
 # Func to load data from a .mat file and store it in a dictionary
 def load_matlab_data(mat_file):
     file = pathlib.Path(mat_file)
     mat = scipy.io.loadmat(file)
     return mat
+
 
 # Func to convert the frames into a list of dictionaries
 def convert(all_frames):
@@ -87,11 +97,12 @@ def convert(all_frames):
         # use try catch to avoid error on edge cases
         try:
             for j in range(100):
-                cur[j] = all_frames[i][0,0][j][0]
+                cur[j] = all_frames[i][0, 0][j][0]
         except IndexError:
             pass
         converted.append(cur)
     return converted
+
 
 # Func to get all the cells from a single frame and store them in a list of lists
 def getCellsField(singleFrame, cellsInfoIndex=12):
@@ -101,9 +112,9 @@ def getCellsField(singleFrame, cellsInfoIndex=12):
         buffer = singleFrame[keys[i]]
         if buffer.shape != () and buffer.shape[0] != 1:
             cell_data = buffer
-    
+
     # Check if cell_data itself is directly accessible or if we need to iterate over it
-    if not isinstance(cell_data, list) and not hasattr(cell_data, '__iter__'):
+    if not isinstance(cell_data, list) and not hasattr(cell_data, "__iter__"):
         # If cell_data is neither list nor iterable, it's not structured as expected
         return []
 
@@ -113,24 +124,29 @@ def getCellsField(singleFrame, cellsInfoIndex=12):
         try:
             # Attempt to access nested structure if it exists
             # Adjust access pattern based on your data's structure
-            cell = cell_data[i][0,0] if hasattr(cell_data[i], 'size') and cell_data[i].size > 0 else None
+            cell = (
+                cell_data[i][0, 0]
+                if hasattr(cell_data[i], "size") and cell_data[i].size > 0
+                else None
+            )
             if cell is None:
                 continue  # Skip if cell is None or doesn't have the expected structure
-            
+
             for j in range(min(cellsInfoIndex, len(cell))):
                 info.append(cell[j])
         except (TypeError, IndexError) as e:
             # Handle cases where cell_data[i] does not support indexing or is out of bounds
             continue
-        
+
         if info:  # Only append if info is not empty
             cells.append(info)
-    
+
     return cells
+
 
 def show_mat_data(mat, cols, dir_name):
     mat = load_matlab_data(mat)
-    all_frames = mat[dir_name][0] # all the masks corresponding to 101 tifs
+    all_frames = mat[dir_name][0]  # all the masks corresponding to 101 tifs
     all_frames_converted = convert(all_frames)
     all_masks = []
     mask_index = []
@@ -138,11 +154,12 @@ def show_mat_data(mat, cols, dir_name):
         mask = all_frames_converted[i]
         all_cells_in_mask = getCellsField(mask)
         all_cell_positions = get_all_cells_pos(all_cells_in_mask)
-        picture = patch_cells_into_picture_exc(all_cells_in_mask, all_cell_positions)   
+        picture = patch_cells_into_picture_exc(all_cells_in_mask, all_cell_positions)
         all_masks.append(picture) if picture is not None else None
         mask_index.append(i) if picture is not None else None
 
     plot_all(all_masks, cols, mask_index)
+
 
 # Func to plot all the masks or pictures in a list
 def plot_all(all, cols, mask_name):
@@ -153,7 +170,9 @@ def plot_all(all, cols, mask_name):
     rows = num_masks // cols + (num_masks % cols > 0)
 
     # Create a figure to hold the subplots
-    fig, axs = plt.subplots(rows, cols, figsize=(cols*5, rows*5))  # Adjust figsize as needed
+    fig, axs = plt.subplots(
+        rows, cols, figsize=(cols * 5, rows * 5)
+    )  # Adjust figsize as needed
 
     # Flatten the axes array for easy indexing if it's 2D (when rows > 1)
     if num_masks > 1:
@@ -162,25 +181,27 @@ def plot_all(all, cols, mask_name):
     for i in range(num_masks):
         # Plot each mask
         ax = axs[i] if num_masks > 1 else axs
-        ax.imshow(all[i], cmap='gray')
-        ax.axis('off')  # Hide axis
-        ax.set_title(f'Mask {mask_name[i]}')
+        ax.imshow(all[i], cmap="gray")
+        ax.axis("off")  # Hide axis
+        ax.set_title(f"Mask {mask_name[i]}")
 
     # Hide any unused subplots
     if num_masks > 1:
-        for j in range(i+1, rows*cols):
-            axs[j].axis('off')
+        for j in range(i + 1, rows * cols):
+            axs[j].axis("off")
 
     plt.tight_layout()
     plt.show()
 
+
 # Func to plot A mask on A tif image
-def plot_mask_on_image(image, mask):
-    plt.figure(figsize=(10, 10))
-    plt.imshow(image, cmap='gray')
-    plt.imshow(mask, cmap='jet', alpha=0.5)
-    plt.title('Overlay of Image and Mask')
+def plot_mask_on_image(image, mask, title):
+    plt.figure(figsize=(20, 20))
+    plt.imshow(image, cmap="gray")
+    plt.imshow(mask, cmap="jet", alpha=0.2)
+    plt.title(title)
     plt.show()
+
 
 # Func to plot ALL the masks on ALL images
 def plot_all_masks_on_all_images(all_images, all_masks, cols, mask_index):
@@ -191,7 +212,9 @@ def plot_all_masks_on_all_images(all_images, all_masks, cols, mask_index):
     rows = num_images // cols + (num_images % cols > 0)
 
     # Create a figure to hold the subplots
-    fig, axs = plt.subplots(rows, cols, figsize=(cols*5, rows*5))  # Adjust figsize as needed
+    fig, axs = plt.subplots(
+        rows, cols, figsize=(cols * 5, rows * 5)
+    )  # Adjust figsize as needed
 
     # Flatten the axes array for easy indexing if it's 2D (when rows > 1)
     if num_images > 1:
@@ -200,34 +223,38 @@ def plot_all_masks_on_all_images(all_images, all_masks, cols, mask_index):
     for i in range(num_images):
         # Plot each mask
         ax = axs[i] if num_images > 1 else axs
-        ax.imshow(all_images[i], cmap='gray')
-        ax.imshow(all_masks[i], cmap='jet', alpha=0.5)
-        ax.axis('off')  # Hide axis
-        ax.set_title(f'Mask {mask_index[i]}')
+        ax.imshow(all_images[i], cmap="gray")
+        ax.imshow(all_masks[i], cmap="jet", alpha=0.5)
+        ax.axis("off")  # Hide axis
+        ax.set_title(f"Mask {mask_index[i]}")
 
     # Hide any unused subplots
     if num_images > 1:
-        for j in range(i+1, rows*cols):
-            axs[j].axis('off')
+        for j in range(i + 1, rows * cols):
+            axs[j].axis("off")
 
     plt.tight_layout()
     plt.show()
 
+
 # New 4-5-2024
 # Func to return all tiffs in the folder as a 3D numpy array (num_images, height, width)
 def get_tiffs_from_folder(folder_name):
-     # folder name
+    # folder name
     file_names = os.listdir(folder_name)
-    tiff_files = [file for file in file_names if file.endswith('.tif') or file.endswith('.tiff')]
+    tiff_files = [
+        file for file in file_names if file.endswith(".tif") or file.endswith(".tiff")
+    ]
     tiff_files.sort()
     images = [tifffile.imread(os.path.join(folder_name, file)) for file in tiff_files]
     images_array = np.array(images)
     return images_array
 
+
 # Func to return all masks in the mat file as a list
 def get_masks_from_mat(mat_file, dir_name):
     mat = load_matlab_data(mat_file)
-    all_frames = mat[dir_name][0] # all the masks corresponding to 101 tifs
+    all_frames = mat[dir_name][0]  # all the masks corresponding to 101 tifs
     all_frames_converted = convert(all_frames)
     all_masks = []
     mask_index = []
@@ -235,12 +262,13 @@ def get_masks_from_mat(mat_file, dir_name):
         mask = all_frames_converted[i]
         all_cells_in_mask = getCellsField(mask)
         all_cell_positions = get_all_cells_pos(all_cells_in_mask)
-        picture = patch_cells_into_picture_exc(all_cells_in_mask, all_cell_positions)   
+        picture = patch_cells_into_picture_exc(all_cells_in_mask, all_cell_positions)
         all_masks.append(picture) if picture is not None else None
         mask_index.append(i) if picture is not None else None
-    
+
     all_masks = np.array(all_masks)
     return all_masks, mask_index
+
 
 # Func to return all masks in the mat file as a list w/o combine
 def get_masks_from_mat_wo_c(mat_file, dir_name):
@@ -252,11 +280,11 @@ def get_masks_from_mat_wo_c(mat_file, dir_name):
         mask = all_frames_converted[i]
         all_cells_in_mask = getCellsField(mask)
         all_cell_positions = get_all_cells_pos(all_cells_in_mask)
-    
+
     all_masks = np.array(all_masks)
     return all_masks, mask_index
+
 
 def load(folder_name, mat_file, dir_name):
     all_images = get_tiffs_from_folder(folder_name)
     mat = load_matlab_data(mat_file)
-    
