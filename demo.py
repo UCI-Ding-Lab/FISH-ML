@@ -288,3 +288,9 @@ for epoch in range(num_epochs):
         # optimize
         optimizer.step()
         epoch_losses.append(loss.item())
+    
+    print(f'EPOCH: {epoch}')
+    print(f'Mean loss: {mean(epoch_losses)}')
+
+# Save the model's state dictionary to a file
+torch.save(model.state_dict(), "./fish_segmentation_model_1.0.pth")
