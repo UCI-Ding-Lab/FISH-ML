@@ -5,6 +5,7 @@ import pathlib
 import scipy.io
 import tifffile
 import os
+from PIL import Image
 
 
 def plot_all_cells_in_mask(all_cells_in_mask_1):
@@ -240,14 +241,17 @@ def plot_all_masks_on_all_images(all_images, all_masks, cols, mask_index):
 # New 4-5-2024
 # Func to return all tiffs in the folder as a 3D numpy array (num_images, height, width)
 def get_tiffs_from_folder(folder_name):
-    # folder name
     file_names = os.listdir(folder_name)
-    tiff_files = [
-        file for file in file_names if file.endswith(".tif") or file.endswith(".tiff")
-    ]
+    tiff_files = [file for file in file_names if file.endswith(".tif") or file.endswith(".tiff")]
     tiff_files.sort()
-    images = [tifffile.imread(os.path.join(folder_name, file)) for file in tiff_files]
-    images_array = np.array(images)
+    images = []
+    for file in tiff_files:
+        file_path = pathlib.Path(folder_name) / file
+        img = Image.open(file_path)
+        image_array = np.array(img)
+        images.append(image_array)
+    # Stack all image arrays into a single numpy array
+    images_array = np.stack(images)
     return images_array
 
 

@@ -30,6 +30,7 @@ class SAMDataset(torchDataset):
 
     # get bounding box prompt
     prompt = get_bounding_box(ground_truth_mask)
+    print(prompt)
 
     # prepare image and prompt for the model
     inputs = self.processor(image, input_boxes=[[prompt]], return_tensors="pt")
