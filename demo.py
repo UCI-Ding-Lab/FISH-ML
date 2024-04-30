@@ -194,8 +194,7 @@ if __name__ == "__main__":
             # optimize
             optimizer.step()
             epoch_losses.append(loss.item())
-        print(f"EPOCH: {epoch}")
-        print(f"Mean loss: {mean(epoch_losses)}")
+        logging.info(f"EPOCH: {epoch} | Mean loss: {mean(epoch_losses)}")
     logging.info(f"Done")
 
     logging.info(f"Saving model...")
