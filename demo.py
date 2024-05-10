@@ -7,7 +7,6 @@ from transformers import SamModel
 from torch.utils.data import DataLoader
 from patchify import patchify
 import os
-import time
 import torch
 from torch.optim import Adam
 import monai
@@ -153,9 +152,8 @@ if __name__ == "__main__":
 
     logging.info(f"Loading trainer...")
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    # "facebook/sam-vit-huge" is equivalent to "ViT-H SAM model"
-    model = SamModel.from_pretrained("facebook/sam-vit-huge")
-    processor = SamProcessor.from_pretrained("facebook/sam-vit-huge")
+    model = SamModel.from_pretrained("facebook/sam-vit-base")
+    processor = SamProcessor.from_pretrained("facebook/sam-vit-base")
     train_dataset = ppf.SAMDataset(dataset=dataset, processor=processor)
     train_dataloader = DataLoader(train_dataset, batch_size=2, shuffle=True)
     batch = next(iter(train_dataloader))
@@ -171,7 +169,7 @@ if __name__ == "__main__":
     seg_loss = monai.losses.DiceCELoss(
         sigmoid=True, squared_pred=True, reduction="mean"
     )
-    num_epochs = 1
+    num_epochs = 100
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model.to(device)
     model.train()
@@ -199,5 +197,5 @@ if __name__ == "__main__":
 
     logging.info(f"Saving model...")
     # Save the model's state dictionary to a file
-    torch.save(model.state_dict(), "./fish_segmentation_model_1.0.pth")
+    torch.save(model.state_dict(), "./fish_segmentation_model_100.0.pth")
     logging.info(f"Model saved successfully!")

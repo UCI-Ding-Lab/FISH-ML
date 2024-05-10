@@ -90,14 +90,10 @@ if __name__ == "__main__":
 
 
     logging.info(f"Processing images and masks...")
-    images_1 = process_tiff_images("1-50_Hong", exposure_factor=30)
     images_2 = process_tiff_images("51-100_Hong", exposure_factor=30)
     images_3 = process_tiff_images("151-200_Hong", exposure_factor=30)
     images_4 = process_tiff_images("201-250_Hong", exposure_factor=30)
-    images = np.concatenate((images_1, images_2, images_3, images_4))
-    filtered_masks_1, valid_indices_1 = fish.get_masks_from_mat(
-        "1-50_Hong/1-50_finished.mat", "Tracked" # needs fix
-    )
+    images = np.concatenate((images_2, images_3, images_4))
     filtered_masks_2, valid_indices_2 = fish.get_masks_from_mat(
         "51-100_Hong/51-100_finished.mat", "Tracked"
     )
@@ -107,8 +103,8 @@ if __name__ == "__main__":
     filtered_masks_4, valid_indices_4 = fish.get_masks_from_mat(
         "201-250_Hong/201-250_finished.mat", "Tracked_201250"
     )
-    filtered_masks = np.concatenate((filtered_masks_1, filtered_masks_2, filtered_masks_3, filtered_masks_4))
-    valid_indices = np.concatenate((valid_indices_1, valid_indices_2, valid_indices_3, valid_indices_4))
+    filtered_masks = np.concatenate((filtered_masks_2, filtered_masks_3, filtered_masks_4))
+    valid_indices = np.concatenate((valid_indices_2, valid_indices_3, valid_indices_4))
     filtered_images = np.array(
         [images[i] for i in valid_indices]
     )  # filters out the images that don't have masks
@@ -174,9 +170,8 @@ if __name__ == "__main__":
 
     logging.info(f"Loading trainer...")
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    # "facebook/sam-vit-huge" is equivalent to "ViT-H SAM model"
-    model = SamModel.from_pretrained("facebook/sam-vit-huge")
-    processor = SamProcessor.from_pretrained("facebook/sam-vit-huge")
+    model = SamModel.from_pretrained("facebook/sam-vit-base")
+    processor = SamProcessor.from_pretrained("facebook/sam-vit-base")
     train_dataset = ppf.SAMDataset(dataset=dataset, processor=processor)
     train_dataloader = DataLoader(train_dataset, batch_size=2, shuffle=True)
     batch = next(iter(train_dataloader))
