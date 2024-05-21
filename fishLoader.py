@@ -275,18 +275,18 @@ def get_masks_from_mat(mat_file, dir_name):
 
 
 # Func to return all masks in the mat file as a list w/o combine
-def get_masks_from_mat_wo_c(mat_file, dir_name):
-    mat = load_matlab_data(mat_file)
-    all_frames = mat[dir_name][0]
-    all_frames_converted = convert(all_frames)
-    rtn = []
-    for i in range(len(all_frames_converted)):
-        mask = all_frames_converted[i]
-        all_cells_in_mask = getCellsField(mask)
-        all_cell_positions = get_all_cells_pos(all_cells_in_mask)
+# def get_masks_from_mat_wo_c(mat_file, dir_name):
+#     mat = load_matlab_data(mat_file)
+#     all_frames = mat[dir_name][0]
+#     all_frames_converted = convert(all_frames)
+#     rtn = []
+#     for i in range(len(all_frames_converted)):
+#         mask = all_frames_converted[i]
+#         all_cells_in_mask = getCellsField(mask)
+#         all_cell_positions = get_all_cells_pos(all_cells_in_mask)
 
-    all_masks = np.array(all_masks)
-    return all_masks, mask_index
+#     all_masks = np.array(all_masks)
+#     return all_masks, mask_index
 
 
 def load(folder_name, mat_file, dir_name):

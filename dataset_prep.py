@@ -1,23 +1,14 @@
 import numpy as np
+import pathlib
+import os
+
+import logging
+
 from datasets import Dataset
 from PIL import Image
-import pathlib
-from transformers import SamProcessor
-from transformers import SamModel
-from torch.utils.data import DataLoader
 from patchify import patchify
-import os
-import torch
-from torch.optim import Adam
-import monai
-from transformers import SamModel, SamProcessor
 import fishLoader as fish
-import pre_proc_func as ppf
-from tqdm import tqdm
-from statistics import mean
-import torch
-from torch.nn.functional import threshold, normalize
-import logging
+import matplotlib.pyplot as plt
 
 
 def process_tiff_images(folder_path, exposure_factor=30):
@@ -48,7 +39,6 @@ def process_tiff_images(folder_path, exposure_factor=30):
 
     return processed_images
 
-
 def grayscale_to_rgb(grayscale_imgs):
     # Initialize an empty array to hold the RGB images
     # The new shape will have an extra dimension for the channels at the end
@@ -59,10 +49,10 @@ def grayscale_to_rgb(grayscale_imgs):
 
     for i in range(grayscale_imgs.shape[0]):
         # Duplicate the grayscale image data across three channels
-        rgb_imgs[i] = np.stack((grayscale_imgs[i],) * 3, axis=-1)
+        grayscale_img_uint8 = (grayscale_imgs[i] / 256).astype(np.uint8)
+        rgb_imgs[i] = np.stack((grayscale_img_uint8,) * 3, axis=-1)
 
     return rgb_imgs
-
 
 def rgb_to_grayscale(images):
     # Initialize an empty array to hold the grayscale images
@@ -79,25 +69,45 @@ def rgb_to_grayscale(images):
 
     return grayscale_imgs
 
-
 if __name__ == "__main__":
+    
     logging.basicConfig(
         level=logging.INFO, format="[%(asctime)s][%(levelname)s] %(message)s"
     )
     patch_size = 256
-    step = 255
-    logging.info(f"Patch size: {patch_size}, Step: {step}")
+    overlap = 0.5
+    step = int(patch_size * (1 - overlap))
+    exposure_factor = 1
+    logging.info(f"Patch size: {patch_size}, Step: {step}, Patch Overlap: {overlap}")
+    logging.info(f"Exposure factor: {exposure_factor}")
+
 
     logging.info(f"Processing images and masks...")
-    images = process_tiff_images("201-250_Hong", exposure_factor=30)
-    filtered_masks, valid_indices = fish.get_masks_from_mat(
+    images_2 = process_tiff_images("51-100_Hong", exposure_factor=exposure_factor)
+    images_3 = process_tiff_images("151-200_Hong", exposure_factor=exposure_factor)
+    images_4 = process_tiff_images("201-250_Hong", exposure_factor=exposure_factor)
+    images = np.concatenate((images_2, images_3, images_4))
+    filtered_masks_2, valid_indices_2 = fish.get_masks_from_mat(
+        "51-100_Hong/51-100_finished.mat", "Tracked"
+    )
+    filtered_masks_3, valid_indices_3 = fish.get_masks_from_mat(
+        "151-200_Hong/151-200_finished.mat", "Tracked_151200"
+    )
+    filtered_masks_4, valid_indices_4 = fish.get_masks_from_mat(
         "201-250_Hong/201-250_finished.mat", "Tracked_201250"
     )
+    filtered_masks = np.concatenate((filtered_masks_2, filtered_masks_3, filtered_masks_4))
+    valid_indices = np.concatenate((valid_indices_2, valid_indices_3, valid_indices_4))
     filtered_images = np.array(
         [images[i] for i in valid_indices]
     )  # filters out the images that don't have masks
     grayscale_images = filtered_images
     logging.info(f"Done")
+    """
+    Processing part checked, image array shape is (150, 2048, 2048), 150 images in total
+    2024 May 16
+    """
+
 
     logging.info(f"Patching Images...")
     all_img_patches = []
@@ -150,52 +160,6 @@ if __name__ == "__main__":
     dataset = Dataset.from_dict(dataset_dict)
     logging.info(f"Done")
 
-    logging.info(f"Loading trainer...")
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = SamModel.from_pretrained("facebook/sam-vit-base")
-    processor = SamProcessor.from_pretrained("facebook/sam-vit-base")
-    train_dataset = ppf.SAMDataset(dataset=dataset, processor=processor)
-    train_dataloader = DataLoader(train_dataset, batch_size=2, shuffle=True)
-    batch = next(iter(train_dataloader))
-    # make sure we only compute gradients for mask decoder
-    for name, param in model.named_parameters():
-        if name.startswith("vision_encoder") or name.startswith("prompt_encoder"):
-            param.requires_grad_(False)
+    logging.info(f"Saving dataset to disk...")
+    dataset.save_to_disk(pathlib.Path("./data"))
     logging.info(f"Done")
-
-    logging.info(f"Training in progress...")
-    # Note: Hyperparameter tuning could improve performance here
-    optimizer = Adam(model.mask_decoder.parameters(), lr=1e-5, weight_decay=0)
-    seg_loss = monai.losses.DiceCELoss(
-        sigmoid=True, squared_pred=True, reduction="mean"
-    )
-    num_epochs = 100
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    model.to(device)
-    model.train()
-    for epoch in range(num_epochs):
-        epoch_losses = []
-        for batch in tqdm(train_dataloader):
-            # forward pass
-            outputs = model(
-                pixel_values=batch["pixel_values"].to(device),
-                input_boxes=batch["input_boxes"].to(device),
-                multimask_output=False,
-            )
-            # compute loss
-            predicted_masks = outputs.pred_masks.squeeze(1)
-            ground_truth_masks = batch["ground_truth_mask"].float().to(device)
-            loss = seg_loss(predicted_masks, ground_truth_masks.unsqueeze(1))
-            # backward pass (compute gradients of parameters w.r.t. loss)
-            optimizer.zero_grad()
-            loss.backward()
-            # optimize
-            optimizer.step()
-            epoch_losses.append(loss.item())
-        logging.info(f"EPOCH: {epoch} | Mean loss: {mean(epoch_losses)}")
-    logging.info(f"Done")
-
-    logging.info(f"Saving model...")
-    # Save the model's state dictionary to a file
-    torch.save(model.state_dict(), "./fish_segmentation_model_100.0.pth")
-    logging.info(f"Model saved successfully!")
