@@ -50,7 +50,7 @@ if __name__ == "__main__":
     seg_loss = monai.losses.DiceCELoss(
         sigmoid=True, squared_pred=True, reduction="mean"
     )
-    num_epochs = 1
+    num_epochs = 100
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model.to(device)
     model.train()

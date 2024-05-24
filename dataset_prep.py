@@ -108,7 +108,6 @@ if __name__ == "__main__":
     2024 May 16
     """
 
-
     logging.info(f"Patching Images...")
     all_img_patches = []
     for img in range(grayscale_images.shape[0]):
