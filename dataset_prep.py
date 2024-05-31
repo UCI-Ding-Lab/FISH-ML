@@ -9,7 +9,7 @@ from PIL import Image
 from patchify import patchify
 import fishLoader as fish
 import matplotlib.pyplot as plt
-
+import cv2
 
 def process_tiff_images(folder_path, exposure_factor=30):
     # Create a Path object for the folder
@@ -69,6 +69,24 @@ def rgb_to_grayscale(images):
 
     return grayscale_imgs
 
+def img_rotation(cell, degree):
+    (h, w) = cell.shape[:2]
+    angle = degree
+    center = (w // 2, h // 2)
+    M = cv2.getRotationMatrix2D(center, angle, 1.0)
+    # When rotating, the image corners might move outside of the frame
+    # To fit the whole rotated image, calculate the new width and height
+    cos = np.abs(M[0, 0])
+    sin = np.abs(M[0, 1])
+    # New width and height
+    new_w = int((h * sin) + (w * cos))
+    new_h = int((h * cos) + (w * sin))
+    # Adjust the rotation matrix to take into account translation
+    M[0, 2] += (new_w / 2) - center[0]
+    M[1, 2] += (new_h / 2) - center[1]
+    rotated_image = cv2.warpAffine(cell, M, (new_w, new_h))
+    return rotated_image
+
 if __name__ == "__main__":
     
     logging.basicConfig(
@@ -105,6 +123,20 @@ if __name__ == "__main__":
     logging.info(f"Done")
     """
     Processing part checked, image array shape is (150, 2048, 2048), 150 images in total
+    2024 May 16
+    """
+
+    logging.info(f"Rotating images and masks, generating 4x dataset size for training...")
+    for degree in [90, 180, 270]:
+        rotated_images = np.array([img_rotation(img, degree) for img in grayscale_images])
+        rotated_masks = np.array([img_rotation(mask, degree) for mask in filtered_masks])
+        grayscale_images = np.concatenate((grayscale_images, rotated_images))
+        filtered_masks = np.concatenate((filtered_masks, rotated_masks))
+    print(grayscale_images.shape)
+    print(filtered_masks.shape)
+    logging.info(f"Done")
+    """
+    Rotation part checked, image array shape is (150, 2048, 2048), 150 images in total
     2024 May 16
     """
 
