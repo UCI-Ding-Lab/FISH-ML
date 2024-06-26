@@ -3,7 +3,6 @@ import pathlib
 import cv2
 from PIL import Image
 import numpy as np
-import matplotlib.pyplot as plt
 
 fishcore = fishCore.fishcore(pathlib.Path("./config.ini"))
 fishcore.set_modle_version("2.1")

@@ -8,8 +8,6 @@ import matplotlib.pyplot as plt
 from transformers import SamModel, SamConfig, SamProcessor
 from scipy.ndimage import zoom
 
-
-
 class ColoredFormatter(logging.Formatter):
     COLORS = {
         'DEBUG': '\033[94m',
@@ -56,7 +54,7 @@ class fishcore():
     def set_modle_version(self,v):
         if v in self.supported_version:
             self.model_version = v
-            self.model_path = self.asset_folder_path / "modle" / f"fish_v{v}.pth"
+            self.model_path = self.asset_folder_path / "model" / f"fish_v{v}.pth"
             if self.model:
                 del self.model
             self.model = SamModel(config=self.model_config)
@@ -72,7 +70,7 @@ class fishcore():
             if not (modle_folder / f"fish_{v}.pth").exists():
                 self.logger.error(f"assets_validation: Modle file for version {v} is missing")
     
-    def predict(self, img: np.ndarray, show=False):
+    def predict(self, img: np.ndarray):
         if not self.model:
             self.logger.error("predict: Modle not loaded")
             return
@@ -107,6 +105,8 @@ class fishcore():
         
         bboxes = prepare_input(img)
         self.logger.info(f"predict: Found {len(bboxes)} bounding boxes")
+        
+        # all together
         inputs = self.processor(img, input_boxes=[[bbox for bbox in bboxes]], return_tensors="pt")
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
         self.model.eval()
@@ -115,8 +115,7 @@ class fishcore():
             # !!!pred_masks shape: torch.Size([1, 43, 1, 256, 256]) be4 squeeze
         
         result = np.zeros(img.shape[:2], dtype=np.uint8)
-        seg_result = []
-        zoom_factor = img.shape[0] / 256
+        zoom_factor = img.shape[0] / 256 # sam mask resize factor
 
         for ind, bbox in enumerate(bboxes):
             self.logger.info(f"predict: Processing bounding box {ind + 1}")
@@ -132,6 +131,7 @@ class fishcore():
             seg = (prob > float(self.config["predict"]["probability_threshold"])).astype(np.uint8)
             # mag to 2048 2048
             seg = zoom(seg, (zoom_factor, zoom_factor), order=0)
+            # filter outside noise then replace
             seg = seg[min_y:max_y, min_x:max_x]
             result[min_y:max_y, min_x:max_x] = seg
 
