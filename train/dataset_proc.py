@@ -15,7 +15,7 @@ def get_bounding_box(ground_truth_map):
 
   return bbox
 
-class SAMDataset(torchDataset):
+class fishDataset(torchDataset):
   def __init__(self, dataset, processor):
     self.dataset = dataset
     self.processor = processor

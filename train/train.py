@@ -34,7 +34,7 @@ if __name__ == "__main__":
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = SamModel.from_pretrained("facebook/sam-vit-base")
     processor = SamProcessor.from_pretrained("facebook/sam-vit-base")
-    train_dataset = ppf.SAMDataset(dataset=dataset, processor=processor)
+    train_dataset = ppf.fishDataset(dataset=dataset, processor=processor)
     train_dataloader = DataLoader(train_dataset, batch_size=2, shuffle=True)
     batch = next(iter(train_dataloader))
     # make sure we only compute gradients for mask decoder

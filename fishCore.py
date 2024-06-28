@@ -6,7 +6,7 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from transformers import SamModel, SamConfig, SamProcessor
-from scipy.ndimage import zoom
+from scipy.ndimage import binary_erosion
 
 class ColoredFormatter(logging.Formatter):
     COLORS = {
@@ -60,19 +60,19 @@ class fishcore():
             self.model = SamModel(config=self.model_config)
             self.model.load_state_dict(torch.load(self.model_path, map_location=torch.device(self.device)))
             self.model.to(self.device)
-            self.logger.info(f"set_modle_version: Modle version {v} loaded")
+            self.logger.info(f"CHECK: Model version {v} loaded")
         else:
-            self.logger.error(f"set_modle_version: Version {v} is not supported")
+            self.logger.error(f"CHECK: Version {v} is not supported")
     
     def assets_validation(self):
         modle_folder = self.asset_folder_path / "modle"
         for v in self.supported_version:
             if not (modle_folder / f"fish_{v}.pth").exists():
-                self.logger.error(f"assets_validation: Modle file for version {v} is missing")
+                self.logger.error(f"CHECK: Model file for version {v} is missing")
     
     def predict(self, img: np.ndarray):
         if not self.model:
-            self.logger.error("predict: Modle not loaded")
+            self.logger.error("PRED: Modle not loaded")
             return
         
         def prepare_input(img):
@@ -104,7 +104,7 @@ class fishcore():
             return bounding_boxes
         
         bboxes = prepare_input(img)
-        self.logger.info(f"predict: Found {len(bboxes)} bounding boxes")
+        self.logger.info(f"PRED: found {len(bboxes)} bounding boxes")
         
         # all together
         inputs = self.processor(img, input_boxes=[[bbox for bbox in bboxes]], return_tensors="pt")
@@ -114,38 +114,42 @@ class fishcore():
             outputs = self.model(**inputs, multimask_output=False)
             # !!!pred_masks shape: torch.Size([1, 43, 1, 256, 256]) be4 squeeze
         
+        self.logger.info(f"PRED: generated {outputs.pred_masks.shape[1]} masks")
+        masks = self.processor.image_processor.post_process_masks(outputs.pred_masks.cpu(), inputs["original_sizes"].cpu(), inputs["reshaped_input_sizes"].cpu())
+        masks = masks[0].squeeze(1).numpy().astype(np.uint8)
         result = np.zeros(img.shape[:2], dtype=np.uint8)
-        zoom_factor = img.shape[0] / 256 # sam mask resize factor
-
+        
         for ind, bbox in enumerate(bboxes):
-            self.logger.info(f"predict: Processing bounding box {ind + 1}")
             min_x, min_y, max_x, max_y = bbox
             
             # ignore noise
             if max_x <= min_x or max_y <= min_y:
                 continue
-
-            # squeeze first [1 43 1 256 256] + loop, target -> [256 256] of prob
-            prob = torch.sigmoid(outputs.pred_masks.squeeze(1)).cpu().numpy().squeeze()[ind]
-            # filter threshold now [256 256] of 0 and 1
-            seg = (prob > float(self.config["predict"]["probability_threshold"])).astype(np.uint8)
-            # mag to 2048 2048
-            seg = zoom(seg, (zoom_factor, zoom_factor), order=0)
-            # filter outside noise then replace
+            
+            seg = masks[ind]
             seg = seg[min_y:max_y, min_x:max_x]
+            if self.config["predict"]["mask_erosion"].lower() == "true":
+                er_factor = int(self.config["predict"]["erosion_factor"])
+                eroded_mask = binary_erosion(seg, structure=np.ones((er_factor, er_factor)))
+                seg = seg - eroded_mask
             result[min_y:max_y, min_x:max_x] = seg
+        self.logger.info("PRED: combination completed")
 
         if self.config["show"]["enable"].lower() == "true":
-            fig, axes = plt.subplots(1, 2, figsize=(15, 5))
-            if self.config["show"]["enhancement"].lower() == "true":
-                axes[0].imshow(np.clip(np.array(img) * float(self.config["show"]["exposure_factor"]), 0, 65535), cmap='gray')
+            if self.config["show"]["overlay"].lower() == "true":
+                img[result == 1] = [255,0,0]
+                plt.imshow(img)
             else:
-                axes[0].imshow(img)
-            axes[0].set_title("Image")
-            axes[1].imshow(result, cmap='gray')
-            axes[1].set_title("Mask")
+                fig, axes = plt.subplots(1, 2, figsize=(15, 5))
+                if self.config["show"]["enhancement"].lower() == "true":
+                    axes[0].imshow(np.clip(np.array(img) * float(self.config["show"]["exposure_factor"]), 0, 65535), cmap='gray')
+                else:
+                    axes[0].imshow(img)
+                axes[0].set_title("Image")
+                axes[1].imshow(result, cmap='gray')
+                axes[1].set_title("Mask")
             plt.show()
         
-        return seg
+        return masks
         
         
