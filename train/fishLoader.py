@@ -3,7 +3,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pathlib
 import scipy.io
-import tifffile
 import os
 from PIL import Image
 
