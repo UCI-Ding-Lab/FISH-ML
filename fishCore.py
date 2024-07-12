@@ -27,7 +27,7 @@ class ColoredFormatter(logging.Formatter):
         record.msg = f"{log_color}{record.msg}{reset_color}"
         return super().format(record)
 
-class fishcore():
+class Fish():
     def __init__(self,config: pathlib.Path) -> None:
         # config.ini
         self.config = configparser.ConfigParser()
@@ -50,6 +50,9 @@ class fishcore():
         self.model = None
         self.model_config = SamConfig.from_pretrained("facebook/sam-vit-base")
         self.processor = SamProcessor.from_pretrained("facebook/sam-vit-huge")
+        # module
+        self.finetune = self.Finetune(self)
+        self.sam = self.Sam(self)
         
         #self.assets_validation()
     
@@ -74,200 +77,213 @@ class fishcore():
             if not (modle_folder / f"fish_{v}.pth").exists():
                 self.logger.error(f"CHECK: Model file for version {v} is missing")
     
-    def predict(self, img: np.ndarray) -> np.ndarray:
-        """clustering bright points to bbox, predict masks, combine masks
-
-        Args:
-            img (np.ndarray): grey scale only, 2dim
-
-        Returns:
-            np.ndarray: 3dim [n, h, w] masks
-        """
-        if not self.model:
-            self.logger.error("PRED: Modle not loaded")
-            return
-        if len(img.shape) != 2:
-            self.logger.error("PRED: Image should be in grayscale")
-            return
+    @staticmethod
+    def hdr_to_rgb(hdr_image, dynamic_range):
+        scale_factor = 255 / dynamic_range
+        scaled_image = (hdr_image * scale_factor).astype(np.uint8)
+        rgb_image = np.stack((scaled_image,) * 3, axis=-1)
+        return rgb_image
+    
+    @staticmethod
+    def prepare_input(cls,img):
+        def get_top_brightness_points(np_image, percentage):
+            threshold_value = np.percentile(np_image, float(100 - percentage))
+            bright_areas_mask = np_image > threshold_value
+            return bright_areas_mask
+        def cluster_points(points, eps, min_samples):
+            db = DBSCAN(eps=eps, min_samples=min_samples).fit(points)
+            labels = db.labels_
+            unique_labels = set(labels)
+            clusters = [points[labels == k] for k in unique_labels if k != -1]
+            return clusters
+        def get_bounding_box(points):
+            min_x = np.min(points[:, 1])
+            max_x = np.max(points[:, 1])
+            min_y = np.min(points[:, 0])
+            max_y = np.max(points[:, 0])
+            return [min_x, min_y, max_x, max_y]
+        bright_areas_mask = get_top_brightness_points(img, float(cls.config["predict"]["brightest_percentage"]))
+        bright_points = np.column_stack(np.where(bright_areas_mask))
+        clusters = cluster_points(bright_points,
+                                  eps=float(cls.config["predict"]["dbscan_eps"]),
+                                  min_samples=int(cls.config["predict"]["dbscan_min_samples"]))
+        grouped_input_points = [cluster.tolist() for cluster in clusters]
+        bounding_boxes = [get_bounding_box(np.array(cluster)) for cluster in grouped_input_points]
+        finalized_bboxes = Fish.finalize_bbox(bounding_boxes,
+                                              int(cls.config["predict"]["bbox_expand_px"]),
+                                              int(cls.config["predict"]["bbox_area_threshold"]))
+        return {"bright_points": bright_points, "clusters": clusters, "bboxes": finalized_bboxes}
+    
+    @staticmethod
+    def finalize_bbox(orignal_bbox, expand_fct, bbox_area_threshold):
+        bboxes = []
+        for box in orignal_bbox:
+            min_x, min_y, max_x, max_y = box
+            area = (max_x - min_x) * (max_y - min_y)
+            if area < bbox_area_threshold:
+                continue
+            expanded_bbox = [min_x - expand_fct,
+                            min_y - expand_fct,
+                            max_x + expand_fct,
+                            max_y + expand_fct]
+            bboxes.append(expanded_bbox)
+        return bboxes
+    
+    @staticmethod
+    def cal_iou(result: np.ndarray, gt: np.ndarray):
+        intersection = np.logical_and(result, gt)
+        union = np.logical_or(result, gt)
+        iou_score = np.sum(intersection) / np.sum(union)
+        return iou_score
+    
+    class Sam():
+        def __init__(self, fish):
+            self.fish: Fish = fish
         
-        def hdr_to_rgb(hdr_image, dynamic_range):
-            scale_factor = 255 / dynamic_range
-            scaled_image = (hdr_image * scale_factor).astype(np.uint8)
-            rgb_image = np.stack((scaled_image,) * 3, axis=-1)
-            return rgb_image
-        
-        def prepare_input(img):
-            def get_top_brightness_points(np_image, percentage):
-                threshold_value = np.percentile(np_image, float(100 - percentage))
-                bright_areas_mask = np_image > threshold_value
-                return bright_areas_mask
+        def predict(self, img: np.ndarray) -> np.ndarray:
+            if len(img.shape) != 2:
+                self.fish.logger.error("PRED: Image should be in grayscale")
+                return
             
-            def cluster_points(points, eps, min_samples):
-                db = DBSCAN(eps=eps, min_samples=min_samples).fit(points)
-                labels = db.labels_
-                unique_labels = set(labels)
-                clusters = [points[labels == k] for k in unique_labels if k != -1]
-                return clusters
+            raw = Fish.prepare_input(self.fish,img)
+            self.fish.logger.info(f"CLU: found {len(raw['bright_points'])} bright points")
+            self.fish.logger.info(f"CLU: found {len(raw['bboxes'])} bounding boxes")
             
-            def get_bounding_box(points):
-                min_x = np.min(points[:, 1])
-                max_x = np.max(points[:, 1])
-                min_y = np.min(points[:, 0])
-                max_y = np.max(points[:, 0])
-                return [min_x, min_y, max_x, max_y]
+            img = Fish.hdr_to_rgb(img, int(self.fish.config["predict"]["dynamic_range"]))
+            masks = None
             
-            bright_areas_mask = get_top_brightness_points(img, float(self.config["predict"]["brightest_percentage"]))
-            bright_points = np.column_stack(np.where(bright_areas_mask))
-            clusters = cluster_points(bright_points, eps=float(self.config["predict"]["dbscan_eps"]), min_samples=int(self.config["predict"]["dbscan_min_samples"]))
-            grouped_input_points = [cluster.tolist() for cluster in clusters]
-            bounding_boxes = [get_bounding_box(np.array(cluster)) for cluster in grouped_input_points]
-            return bright_points, clusters, bounding_boxes
-        
-        def finalize_bbox(orignal_bbox, expand_fct, bbox_area_threshold):
-            bboxes = []
-            for box in orignal_bbox:
-                min_x, min_y, max_x, max_y = box
-                area = (max_x - min_x) * (max_y - min_y)
-                if area < bbox_area_threshold:
-                    continue
-                expanded_bbox = [min_x - expand_fct,
-                                min_y - expand_fct,
-                                max_x + expand_fct,
-                                max_y + expand_fct]
-                bboxes.append(expanded_bbox)
-            return bboxes
-        
-        raw = prepare_input(img)
-        self.logger.info(f"CLU: found {len(raw[0])} bright points")
-        bboxes = finalize_bbox(raw[-1],
-                               int(self.config["predict"]["bbox_expand_px"]),
-                               int(self.config["predict"]["bbox_area_threshold"]))
-        self.logger.info(f"CLU: found {len(bboxes)} bounding boxes")
-        
-        prepro_img_3_chan = hdr_to_rgb(img, int(self.config["predict"]["dynamic_range"]))
-        masks = None
-        
-        if self.config["sam"]["enable"].lower() == "true":
-            sam = sam_model_registry["vit_h"](checkpoint=self.asset_folder_path/"sam"/"sam_vit_h_4b8939.pth")
+            sam = sam_model_registry["vit_h"](checkpoint=self.fish.asset_folder_path/"sam"/"sam_vit_h_4b8939.pth")
             predictor = SamPredictor(sam)
             sam.to(device="cpu")
-            predictor.set_image(prepro_img_3_chan)
-            input_boxes = torch.tensor(bboxes, device=predictor.device)
-            transformed_boxes = predictor.transform.apply_boxes_torch(input_boxes, prepro_img_3_chan.shape[:2])
+            predictor.set_image(img)
+            input_boxes = torch.tensor(raw["bboxes"], device=predictor.device)
+            transformed_boxes = predictor.transform.apply_boxes_torch(input_boxes, img.shape[:2])
             masks, _, _ = predictor.predict_torch(point_coords=None,
                                                   point_labels=None,
                                                   boxes=transformed_boxes,
                                                   multimask_output=False)
             masks = masks.squeeze(1).cpu().numpy().astype(np.uint8)
             # masks (n, 2048, 2048)
-        
-        if self.config["predict"]["enable"].lower() == "true":
-            inputs = self.processor(prepro_img_3_chan,
-                                    input_boxes=[[bbox for bbox in bboxes]],
-                                    return_tensors="pt",
-                                    do_convert_rgb=False).to(self.device)
-            self.model.eval()
-            with torch.no_grad():
-                outputs: dict = self.model(**inputs,
-                                        multimask_output=False)
-                # !!!pred_masks shape: torch.Size([1, bbox, 1, 256, 256]) be4 squeeze
-            self.logger.info(f"PRED: generated {outputs.pred_masks.shape[1]} masks")
             
+            self.fish.logger.debug(f"PRED: combination started")
+            result = np.zeros(img.shape[:2], dtype=np.uint8)
+            for ind, bbox in enumerate(raw["bboxes"]):
+                min_x, min_y, max_x, max_y = bbox
+                if max_x <= min_x or max_y <= min_y:
+                    continue
+                seg = masks[ind]
+                seg = seg[min_y:max_y, min_x:max_x]
+                if self.fish.config["predict"]["mask_erosion"].lower() == "true":
+                    er_factor = int(self.fish.config["predict"]["erosion_factor"])
+                    eroded_mask = binary_erosion(seg, structure=np.ones((er_factor, er_factor)))
+                    seg = seg - eroded_mask
+                result[min_y:max_y, min_x:max_x] = seg
+            self.fish.logger.info("PRED: combination completed")
             
-            masks: list = self.processor.image_processor.post_process_masks(masks=outputs.pred_masks.cpu(),
-                                                                            original_sizes=inputs["original_sizes"].cpu(),
-                                                                            reshaped_input_sizes=inputs["reshaped_input_sizes"].cpu(),
-                                                                            mask_threshold=float(self.config["predict"]["mask_threshold"]))  
-            masks = masks[0].squeeze(1).numpy().astype(np.uint8)
-            # masks (n, 2048, 2048)
+            return raw, masks, result
         
-        if masks is None:
-            self.logger.error("CHECK: enable at least one mask generation method")
-            return
-        
-        self.logger.debug(f"PRED: combination started")
-        result = np.zeros(img.shape[:2], dtype=np.uint8)
-        for ind, bbox in enumerate(bboxes):
-            min_x, min_y, max_x, max_y = bbox
-            if max_x <= min_x or max_y <= min_y:
-                continue
-            seg = masks[ind]
-            seg = seg[min_y:max_y, min_x:max_x]
-            if self.config["predict"]["mask_erosion"].lower() == "true":
-                er_factor = int(self.config["predict"]["erosion_factor"])
-                eroded_mask = binary_erosion(seg, structure=np.ones((er_factor, er_factor)))
-                seg = seg - eroded_mask
-            result[min_y:max_y, min_x:max_x] = seg
-        self.logger.info("PRED: combination completed")
-
-        if self.config["show"]["enable"].lower() == "true":
+        def info(self, img: np.ndarray, gt: np.ndarray) -> None:
+            raw, masks, result = self.predict(img)
             fig, ax = plt.subplots(1, figsize=(8, 8))
             ax.imshow(img, cmap='gray')
-            if self.config["show"]["overlay"].lower() == "true":
+            
+            if self.fish.config["info"]["overlay"].lower() == "true":
                 overlay = np.zeros((img.shape[0], img.shape[1], 4), dtype=np.uint8)
                 overlay[result == 1] = np.array([255, 255, 0, 255])
                 ax.imshow(overlay)
-            if self.config["bbox_preview"]["enable"].lower() == "true":
-                for bbox in bboxes:
+            if self.fish.config["info"]["bbox_preview"].lower() == "true":
+                for bbox in raw["bboxes"]:
                     min_x, min_y, max_x, max_y = bbox
                     rect = patches.Rectangle((min_x, min_y),
-                                            max_x - min_x,
-                                            max_y - min_y,
-                                            linewidth=float(self.config["bbox_preview"]["line_width"]),
-                                            edgecolor='r',
-                                            facecolor='none')
+                                             max_x - min_x,
+                                             max_y - min_y,
+                                             linewidth=float(self.fish.config["info"]["bbox_preview_line_width"]),
+                                             edgecolor='r',
+                                             facecolor='none')
                     ax.add_patch(rect)
-                if self.config["bbox_preview"]["show_cluster"].lower() == "true":
-                    for cluster in raw[1]:
+                if self.fish.config["info"]["show_cluster"].lower() == "true":
+                    for cluster in raw["clusters"]:
                         ax.scatter(cluster[:, 1], cluster[:, 0], s=1, c='b')
-                if self.config["bbox_preview"]["show_brightest_point"].lower() == "true":
-                    ax.scatter(raw[0][:, 1], raw[0][:, 0], s=0.2, c='g')
+                if self.fish.config["info"]["show_brightest_point"].lower() == "true":
+                    ax.scatter(raw["bright_points"][:, 1], raw["bright_points"][:, 0], s=0.2, c='g')
             plt.show()
-        
-        return masks, result
-
-    def info(self, img: np.ndarray, gt: np.ndarray) -> None:
-        def cal_iou(result: np.ndarray, gt: np.ndarray):
-            intersection = np.logical_and(result, gt)
-            union = np.logical_or(result, gt)
-            iou_score = np.sum(intersection) / np.sum(union)
-            return iou_score
-        
-        masks, result = self.predict(img)
-        iou = cal_iou(result, gt)
-        self.logger.info(f"DB: IOU score: {iou}")
     
-    def pipe(self, img: np.ndarray):
-        """not working
+    class Finetune():
+        def __init__(self, fish):
+            self.fish: Fish = fish
 
-        Args:
-            img (np.ndarray): rgb
-        """
-        if not self.model:
-            self.logger.error("PRED: Modle not loaded")
-            return
+        def predict(self, img: np.ndarray) -> np.ndarray:
+            if not self.fish.model:
+                self.fish.logger.error("PRED: Modle not loaded")
+                return
+            if len(img.shape) != 2:
+                self.fish.logger.error("PRED: Image should be in grayscale")
+                return
+            
+            raw = Fish.prepare_input(self.fish, img)
+            self.fish.logger.info(f"CLU: found {len(raw['bright_points'])} bright points")
+            self.fish.logger.info(f"CLU: found {len(raw['bboxes'])} bounding boxes")
+            
+            img = Fish.hdr_to_rgb(img, int(self.fish.config["predict"]["dynamic_range"]))
+            
+            masks = None
+            inputs = self.fish.processor(img,
+                                    input_boxes=[[bbox for bbox in raw["bboxes"]]],
+                                    return_tensors="pt",
+                                    do_convert_rgb=False).to(self.fish.device)
+            self.fish.model.eval()
+            with torch.no_grad():
+                outputs: dict = self.fish.model(**inputs, multimask_output=False)
+                # !!!pred_masks shape: torch.Size([1, bbox, 1, 256, 256]) be4 squeeze
+            self.fish.logger.info(f"PRED: generated {outputs.pred_masks.shape[1]} masks")
+            
+            masks: list = self.fish.processor.image_processor.post_process_masks(masks=outputs.pred_masks.cpu(),
+                                                                                 original_sizes=inputs["original_sizes"].cpu(),
+                                                                                 reshaped_input_sizes=inputs["reshaped_input_sizes"].cpu(),
+                                                                                 mask_threshold=float(self.fish.config["predict"]["mask_threshold"]))  
+            masks = masks[0].squeeze(1).numpy().astype(np.uint8)
+            # masks (n, 2048, 2048)
+            
+            self.fish.logger.debug(f"PRED: combination started")
+            result = np.zeros(img.shape[:2], dtype=np.uint8)
+            for ind, bbox in enumerate(raw["bboxes"]):
+                min_x, min_y, max_x, max_y = bbox
+                if max_x <= min_x or max_y <= min_y:
+                    continue
+                seg = masks[ind]
+                seg = seg[min_y:max_y, min_x:max_x]
+                if self.fish.config["predict"]["mask_erosion"].lower() == "true":
+                    er_factor = int(self.fish.config["predict"]["erosion_factor"])
+                    eroded_mask = binary_erosion(seg, structure=np.ones((er_factor, er_factor)))
+                    seg = seg - eroded_mask
+                result[min_y:max_y, min_x:max_x] = seg
+            self.fish.logger.info("PRED: combination completed")
+            
+            return raw, masks, result
         
-        def show_mask(mask, ax, random_color=False):
-            if random_color:
-                color = np.concatenate([np.random.random(3), np.array([0.6])], axis=0)
-            else:
-                color = np.array([30 / 255, 144 / 255, 255 / 255, 0.6])
-            h, w = mask.shape[-2:]
-            mask_image = mask.reshape(h, w, 1) * color.reshape(1, 1, -1)
-            ax.imshow(mask_image)
-        
-        generator =  pipeline("mask-generation",
-                              points_per_batch = 256,
-                              model=self.model,
-                              device=self.device,
-                              image_processor=self.processor.current_processor)
-        
-        outputs = generator(img, points_per_batch = 256)
-        plt.imshow(img)
-        ax = plt.gca()
-        self.logger.info(f"PRED: generated {len(outputs['masks'])} masks")
-        for mask in outputs["masks"]:
-            show_mask(mask, ax=ax, random_color=True)
-        plt.axis("off")
-        plt.show()
+        def info(self, img: np.ndarray, gt: np.ndarray) -> None:
+            raw, masks, result = self.predict(img)
+            fig, ax = plt.subplots(1, figsize=(8, 8))
+            ax.imshow(img, cmap='gray')
+            
+            if self.fish.config["info"]["overlay"].lower() == "true":
+                overlay = np.zeros((img.shape[0], img.shape[1], 4), dtype=np.uint8)
+                overlay[result == 1] = np.array([255, 255, 0, 255])
+                ax.imshow(overlay)
+            if self.fish.config["info"]["bbox_preview"].lower() == "true":
+                for bbox in raw["bboxes"]:
+                    min_x, min_y, max_x, max_y = bbox
+                    rect = patches.Rectangle((min_x, min_y),
+                                             max_x - min_x,
+                                             max_y - min_y,
+                                             linewidth=float(self.fish.config["info"]["bbox_preview_line_width"]),
+                                             edgecolor='r',
+                                             facecolor='none')
+                    ax.add_patch(rect)
+                if self.fish.config["info"]["show_cluster"].lower() == "true":
+                    for cluster in raw["clusters"]:
+                        ax.scatter(cluster[:, 1], cluster[:, 0], s=1, c='b')
+                if self.fish.config["info"]["show_brightest_point"].lower() == "true":
+                    ax.scatter(raw["bright_points"][:, 1], raw["bright_points"][:, 0], s=0.2, c='g')
+            plt.show()
         
