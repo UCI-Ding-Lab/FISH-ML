@@ -122,10 +122,10 @@ class Fish():
             area = (max_x - min_x) * (max_y - min_y)
             if area < bbox_area_threshold:
                 continue
-            expanded_bbox = [min_x - expand_fct,
-                            min_y - expand_fct,
-                            max_x + expand_fct,
-                            max_y + expand_fct]
+            expanded_bbox = [np.clip(min_x - expand_fct, 0, 2048),
+                             np.clip(min_y - expand_fct, 0, 2048),
+                             np.clip(max_x + expand_fct, 0, 2048),
+                             np.clip(max_y + expand_fct, 0, 2048)]
             bboxes.append(expanded_bbox)
         return bboxes
     
