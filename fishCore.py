@@ -3,12 +3,18 @@ import logging
 import configparser
 from sklearn.cluster import DBSCAN
 import torch
+from torchvision.ops import box_convert
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from transformers import SamModel, SamConfig, SamProcessor, pipeline
 from scipy.ndimage import binary_erosion
 from segment_anything import SamPredictor, sam_model_registry
+import groundingdino.datasets.transforms as T
+from typing import Tuple, List
+import groundingdino.util.inference as dino
+from PIL import Image
+import demo
 
 class ColoredFormatter(logging.Formatter):
     COLORS = {
@@ -56,7 +62,7 @@ class Fish():
         
         #self.assets_validation()
     
-    def set_modle_version(self,v):
+    def set_model_version(self,v):
         if v in self.supported_version:
             self.model_version = v
             self.model_path = self.asset_folder_path / "model" / f"fish_v{v}.pth"
@@ -114,6 +120,60 @@ class Fish():
                                               int(cls.config["predict"]["bbox_area_threshold"]))
         return {"bright_points": bright_points, "clusters": clusters, "bboxes": finalized_bboxes}
     
+    @staticmethod
+    def dino_bbox(config: str, weights: str, img: np.ndarray) -> dict:
+        def load_image(img: np.ndarray) -> Tuple[np.array, torch.Tensor]:
+            def grayscale_to_rgb(grayscale_img) -> np.ndarray:
+                rgb_img = np.zeros((2048, 2048, 3), dtype=np.uint8)
+                img_uint8 = np.clip(grayscale_img//256, 0, 255).astype(np.uint8)
+                rgb_img[:, :, 0] = img_uint8
+                rgb_img[:, :, 1] = img_uint8
+                rgb_img[:, :, 2] = img_uint8
+                dynamic_exp_factor = 255.0 / np.max(rgb_img[:, :, 0])
+                brightened_image = np.clip(rgb_img * dynamic_exp_factor, 0, 255).astype(np.uint8)
+                return brightened_image
+            
+            transform = T.Compose([T.RandomResize([800], max_size=1333),
+                                   T.ToTensor(),
+                                   T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),])
+            image_source = Image.fromarray(grayscale_to_rgb(img))
+            image = np.asarray(image_source)
+            image_transformed, _ = transform(image_source, None)
+            return image, image_transformed
+        
+        def finalization(image_source: np.ndarray, boxes: torch.Tensor, logits: torch.Tensor, phrases: List[str]) -> list:
+            h, w, _ = image_source.shape
+            boxes = boxes * torch.Tensor([w, h, w, h])
+            xyxy = box_convert(boxes=boxes, in_fmt="cxcywh", out_fmt="xyxy").numpy().astype(np.uint16).tolist()
+            bboxes = []
+            for box in xyxy:
+                min_x, min_y, max_x, max_y = box
+                area = (max_x - min_x) * (max_y - min_y)
+                if area < 200 or area > 160000:
+                    continue
+                bboxes.append(box)
+            bboxes = demo.filter_rects(np.array(bboxes)).tolist()
+            return bboxes
+        
+        model = dino.load_model(config, weights)
+        image_source, image = load_image(img)
+
+        TEXT_PROMPT = "white flower"
+        BOX_TRESHOLD = 0.02
+        TEXT_TRESHOLD = 0.25
+
+        boxes, logits, phrases = dino.predict(
+            model=model, 
+            image=image, 
+            caption=TEXT_PROMPT, 
+            box_threshold=BOX_TRESHOLD, 
+            text_threshold=TEXT_TRESHOLD,
+            device="cpu"
+        )
+        
+        finalized_bboxes = finalization(image_source, boxes, logits, phrases)
+        return {"bright_points": "DINO", "clusters": "DINO", "bboxes": finalized_bboxes}
+        
     @staticmethod
     def finalize_bbox(orignal_bbox, expand_fct, bbox_area_threshold):
         bboxes = []
@@ -220,7 +280,10 @@ class Fish():
                 self.fish.logger.error("PRED: Image should be in grayscale")
                 return
             
-            raw = Fish.prepare_input(self.fish, img)
+            # raw = Fish.prepare_input(self.fish, img)
+            raw = Fish.dino_bbox(self.fish.config["dino"]["config"],
+                                 self.fish.config["dino"]["weights"],
+                                 img)
             self.fish.logger.info(f"CLU: found {len(raw['bright_points'])} bright points")
             self.fish.logger.info(f"CLU: found {len(raw['bboxes'])} bounding boxes")
             
