@@ -1,20 +1,27 @@
+# Standard Library Imports
+import os
+import json
 import pathlib
 import logging
 import configparser
-from sklearn.cluster import DBSCAN
-import torch
-from torchvision.ops import box_convert
+from typing import Tuple, List
+
+# Third-Party Imports
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
+from sklearn.cluster import DBSCAN
+import torch
+from torchvision.ops import box_convert
 from transformers import SamModel, SamConfig, SamProcessor, pipeline
 from scipy.ndimage import binary_erosion
-from segment_anything import SamPredictor, sam_model_registry
-import groundingdino.datasets.transforms as T
-from typing import Tuple, List
-import groundingdino.util.inference as dino
 from PIL import Image
-import demo
+
+# Local Application/Library Specific Imports
+import GroundingDINO.groundingdino.datasets.transforms as T
+import GroundingDINO.groundingdino.util.inference as dino
+from segment_anything import SamPredictor, sam_model_registry
+import archive.demo as demo
 
 class ColoredFormatter(logging.Formatter):
     COLORS = {
@@ -76,22 +83,23 @@ class Fish():
             self.logger.error(f"CHECK: Version {v} is not supported")
     
     def assets_validation(self):
-        """unfinsihsed
         """
-        modle_folder = self.asset_folder_path / "modle"
+        unfinished
+        """
+        model_folder = self.asset_folder_path / "model"
         for v in self.supported_version:
-            if not (modle_folder / f"fish_{v}.pth").exists():
+            if not (model_folder / f"fish_{v}.pth").exists():
                 self.logger.error(f"CHECK: Model file for version {v} is missing")
     
     @staticmethod
-    def hdr_to_rgb(hdr_image, dynamic_range):
+    def hdr_to_rgb(hdr_image: np.ndarray, dynamic_range: int) -> np.ndarray:
         scale_factor = 255 / dynamic_range
         scaled_image = (hdr_image * scale_factor).astype(np.uint8)
         rgb_image = np.stack((scaled_image,) * 3, axis=-1)
         return rgb_image
     
     @staticmethod
-    def prepare_input(cls,img):
+    def prepare_input(cls: type, img: np.ndarray) -> dict:
         def get_top_brightness_points(np_image, percentage):
             threshold_value = np.percentile(np_image, float(100 - percentage))
             bright_areas_mask = np_image > threshold_value
@@ -175,7 +183,7 @@ class Fish():
         return {"bright_points": "DINO", "clusters": "DINO", "bboxes": finalized_bboxes}
         
     @staticmethod
-    def finalize_bbox(orignal_bbox, expand_fct, bbox_area_threshold):
+    def finalize_bbox(orignal_bbox: list, expand_fct: int, bbox_area_threshold: int):
         bboxes = []
         for box in orignal_bbox:
             min_x, min_y, max_x, max_y = box
@@ -190,11 +198,28 @@ class Fish():
         return bboxes
     
     @staticmethod
-    def cal_iou(result: np.ndarray, gt: np.ndarray):
-        intersection = np.logical_and(result, gt)
-        union = np.logical_or(result, gt)
+    def cal_iou(result: np.ndarray, gt: list, gt_pos: list) -> Tuple[float, np.ndarray]:
+        """
+        Calculate the Intersection over Union (IoU) between a predicted mask and multiple ground truth masks.
+
+        Args:
+            result (np.ndarray): Prediction mask of shape (2048, 2048) containing binary contour lines.
+            gt (list): A list of small ground truth masks, each represented as a numpy array.
+            gt_pos (list): A list of positions corresponding to the locations of the ground truth masks in the format (y_start, x_start).
+
+        Returns:
+            Tuple[float, np.ndarray]: The IoU score and the combined ground truth mask.
+        """
+        whole_gt = np.zeros(result.shape, dtype=np.uint8)
+        for pos, gt in zip(gt_pos, gt):
+            y_strt, x_strt = pos
+            h, w = gt.shape
+            y_end, x_end = min(y_strt + h, 2048), min(x_strt + w, 2048)
+            whole_gt[y_strt:y_end, x_strt:x_end] |= gt[:y_end-y_strt, :x_end-x_strt]
+        intersection = np.logical_and(result, whole_gt)
+        union = np.logical_or(result, whole_gt)
         iou_score = np.sum(intersection) / np.sum(union)
-        return iou_score
+        return iou_score, whole_gt
     
     class Sam():
         def __init__(self, fish):
@@ -272,9 +297,9 @@ class Fish():
         def __init__(self, fish):
             self.fish: Fish = fish
 
-        def predict(self, img: np.ndarray) -> np.ndarray:
+        def predict(self, img: np.ndarray):
             if not self.fish.model:
-                self.fish.logger.error("PRED: Modle not loaded")
+                self.fish.logger.error("PRED: Model not loaded")
                 return
             if len(img.shape) != 2:
                 self.fish.logger.error("PRED: Image should be in grayscale")
@@ -308,31 +333,44 @@ class Fish():
             # masks (n, 2048, 2048)
             
             self.fish.logger.debug(f"PRED: combination started")
-            result = np.zeros(img.shape[:2], dtype=np.uint8)
+            line_result = np.zeros(img.shape[:2], dtype=np.uint8)
+            area_result = np.zeros(img.shape[:2], dtype=np.uint8)
             for ind, bbox in enumerate(raw["bboxes"]):
                 min_x, min_y, max_x, max_y = bbox
                 if max_x <= min_x or max_y <= min_y:
                     continue
                 seg = masks[ind]
                 seg = seg[min_y:max_y, min_x:max_x]
-                if self.fish.config["predict"]["mask_erosion"].lower() == "true":
+                area_result[min_y:max_y, min_x:max_x] = seg
+                if self.fish.config["info"]["mask_erosion"].lower() == "true":
                     er_factor = int(self.fish.config["predict"]["erosion_factor"])
                     eroded_mask = binary_erosion(seg, structure=np.ones((er_factor, er_factor)))
-                    seg = seg - eroded_mask
-                result[min_y:max_y, min_x:max_x] = seg
+                    contour_seg = seg - eroded_mask
+                    line_result[min_y:max_y, min_x:max_x] = contour_seg
             self.fish.logger.info("PRED: combination completed")
             
-            return raw, masks, result
+            return raw, masks, line_result, area_result
+            # line_result is the prediction with contour only, area_result is concrete prediction
         
-        def info(self, img: np.ndarray, gt: np.ndarray) -> None:
-            raw, masks, result = self.predict(img)
-            fig, ax = plt.subplots(1, figsize=(8, 8))
+        def info(self, img: np.ndarray, gt: list, gt_pos: list) -> None:
+            raw, masks, line_result, area_result = self.predict(img)
+            _, ax = plt.subplots(1, figsize=(8, 8))
             ax.imshow(img, cmap='gray')
+            if self.fish.config["info"]["mask_erosion"].lower() == "true":
+                result = line_result
+            else:
+                result = area_result
             
             if self.fish.config["info"]["overlay"].lower() == "true":
                 overlay = np.zeros((img.shape[0], img.shape[1], 4), dtype=np.uint8)
                 overlay[result == 1] = np.array([255, 255, 0, 255])
                 ax.imshow(overlay)
+            if self.fish.config["info"]["show_iou"].lower() == "true":
+                iou, _ = Fish.cal_iou(area_result, gt, gt_pos)
+                ax.text(0.05, 0.95, f'IoU: {iou:.2f}', transform=ax.transAxes
+                                                    , fontsize=self.fish.config["info"]["iou_font"].lower()
+                                                    , verticalalignment='top'
+                                                    , bbox=dict(facecolor='white', alpha=0.5))
             if self.fish.config["info"]["bbox_preview"].lower() == "true":
                 for bbox in raw["bboxes"]:
                     min_x, min_y, max_x, max_y = bbox
@@ -349,4 +387,54 @@ class Fish():
                 if self.fish.config["info"]["show_brightest_point"].lower() == "true":
                     ax.scatter(raw["bright_points"][:, 1], raw["bright_points"][:, 0], s=0.2, c='g')
             plt.show()
+        
+        def validate(self, img_name, img: np.ndarray, gt: list, gt_pos: list) -> None:
+            raw, masks, line_result, area_result = self.predict(img)
+            fig_ax, ax = plt.subplots(1, figsize=(8, 8))
+            fig_bx, bx = plt.subplots(1, figsize=(8, 8))
+            ax.imshow(img, cmap='gray')
+            bx.imshow(img, cmap='gray')
+            if self.fish.config["info"]["mask_erosion"].lower() == "true":
+                result = line_result
+            else:
+                result = area_result
+            
+            if self.fish.config["info"]["overlay"].lower() == "true":
+                overlay = np.zeros((img.shape[0], img.shape[1], 4), dtype=np.uint8)
+                overlay[result == 1] = np.array([255, 255, 0, 255])
+                ax.imshow(overlay)
+            if self.fish.config["info"]["show_iou"].lower() == "true":
+                iou, whole_gt = Fish.cal_iou(area_result, gt, gt_pos)
+                bx.imshow(whole_gt, alpha=0.5)
+                ax.text(0.05, 0.95, f'IoU: {iou:.2f}', transform=ax.transAxes
+                                                    , fontsize=self.fish.config["info"]["iou_font"].lower()
+                                                    , verticalalignment='top'
+                                                    , bbox=dict(facecolor='white', alpha=0.5))
+            if self.fish.config["info"]["bbox_preview"].lower() == "true":
+                for bbox in raw["bboxes"]:
+                    min_x, min_y, max_x, max_y = bbox
+                    rect = patches.Rectangle((min_x, min_y),
+                                             max_x - min_x,
+                                             max_y - min_y,
+                                             linewidth=float(self.fish.config["info"]["bbox_preview_line_width"]),
+                                             edgecolor='r',
+                                             facecolor='none')
+                    ax.add_patch(rect)
+                if self.fish.config["info"]["show_cluster"].lower() == "true":
+                    for cluster in raw["clusters"]:
+                        ax.scatter(cluster[:, 1], cluster[:, 0], s=1, c='b')
+                if self.fish.config["info"]["show_brightest_point"].lower() == "true":
+                    ax.scatter(raw["bright_points"][:, 1], raw["bright_points"][:, 0], s=0.2, c='g')
+            if self.fish.config["validate"]["to_output"].lower() == "true":
+                output_folder = pathlib.Path(self.fish.config["validate"]["output_folder"])
+                os.makedirs(output_folder, exist_ok=True)
+                ax_plot_path = os.path.join(output_folder, f'{img_name}_a.png') # prediction
+                bx_plot_path = os.path.join(output_folder, f'{img_name}_b.png') # ground truth
+                fig_ax.savefig(ax_plot_path)
+                fig_bx.savefig(bx_plot_path)
+                plt.close(fig_ax)
+                plt.close(fig_bx)
+
+            else:
+                plt.show()
         

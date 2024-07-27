@@ -10,5 +10,7 @@ fishcore.set_model_version("3.50")
 img = np.array(Image.open(pathlib.Path("./assets/tif/1-50_Hong/MAX_KOa_w1-359 DAPI_s032.tif")))
 img2 = np.array(Image.open(pathlib.Path("./assets/tif/201-250_Hong/MAX_CTLa_w1-359 DAPI_s026.tif")))
 mat = dprep.get_masks_from_mat(pathlib.Path("./assets/tif/1-50_Hong/1-50_finished.mat"), "Tracked")
-gt = mat["masks"][mat["name"].index("MAX_KOa_w1-359 DAPI_s032.tif")]
-fishcore.finetune.info(img2, gt)
+gt_masks = mat["masks"][mat["name"].index("MAX_KOa_w1-359 DAPI_s032.tif")]
+gt_pos = mat["xy"][mat["name"].index("MAX_KOa_w1-359 DAPI_s032.tif")]
+fishcore.finetune.info(img, gt_masks, gt_pos)
+

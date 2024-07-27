@@ -96,7 +96,7 @@ def get_masks_from_mat(mat_file, dir_name):
         return array_size < target_size
     
     mat = load_matlab_data(mat_file)
-    all_frames = mat[dir_name][0]  # all the masks corresponding to 101 tifs
+    all_frames = mat[dir_name][0]  # all the 101 frames corresponding to 101 tifs, each frame contains various ground truth masks
     all_frames_converted = convert(all_frames)
     d = {"name":[],"image":[],"xy":[],"masks":[]}
     for i in range(len(all_frames_converted)):

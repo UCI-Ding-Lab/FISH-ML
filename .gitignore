@@ -170,6 +170,7 @@ cython_debug/
 # lab folders
 /60min_tiff
 /segment_anything
+/GroundingDINO
 /1-50_Hong
 /51-100_Hong
 /101-150_Hong

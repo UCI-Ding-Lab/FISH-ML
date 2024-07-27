@@ -10,6 +10,7 @@ from datasets import Dataset
 from PIL import Image
 from transformers import SamProcessor, SamModel
 from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 from patchify import patchify
 from torch.optim import Adam
 import torch.nn.functional as F
@@ -45,15 +46,22 @@ if __name__ == "__main__":
 
 
     logging.info(f"Training in progress...")
+    # Initialize TensorBoard SummaryWriter
+    log_dir = f"runs/experiment_{int(time.time())}"
+    writer = SummaryWriter(log_dir)
     # Note: Hyperparameter tuning could improve performance here
     optimizer = Adam(model.mask_decoder.parameters(), lr=1e-5, weight_decay=0)
     seg_loss = monai.losses.DiceCELoss(sigmoid=True,
                                        squared_pred=True,
                                        reduction="mean")
-    num_epochs = 1
+    num_epochs = 10
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model.to(device)
     model.train()
+
+    epoch_mean_losses = []  # List to store mean losses for each epoch
+    global_step = 0  # Initialize global step counter
+
     for epoch in range(num_epochs):
         epoch_losses = []
         for batch in tqdm(train_dataloader):
@@ -74,11 +82,20 @@ if __name__ == "__main__":
             loss.backward()
             optimizer.step()
             epoch_losses.append(loss.item())
+
+            # Log the loss to TensorBoard for every step
+            writer.add_scalar('Loss/step', loss.item(), global_step)
+            global_step += 1  # Increment global step
+
+        mean_epoch_loss = mean(epoch_losses)
+        epoch_mean_losses.append(mean_epoch_loss)
         logging.info(f"EPOCH: {epoch} | Mean loss: {mean(epoch_losses)}")
+        writer.add_scalar('MeanLoss/epoch', mean_epoch_loss, epoch)
     logging.info(f"Done")
 
 
     logging.info(f"Saving model...")
     # Save the model to the file
-    torch.save(model.state_dict(), "./fish_v2.1.pth")
+    torch.save(model.state_dict(), "./fish_tb_1.0.pth")
+    writer.close()
     logging.info(f"Model saved successfully!")
