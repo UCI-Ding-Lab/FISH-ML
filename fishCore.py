@@ -18,10 +18,10 @@ from scipy.ndimage import binary_erosion
 from PIL import Image
 
 # Local Application/Library Specific Imports
-import GroundingDINO.groundingdino.datasets.transforms as T
-import GroundingDINO.groundingdino.util.inference as dino
+import groundingdino.datasets.transforms as T
+import groundingdino.util.inference as dino
+import groundingdino
 from segment_anything import SamPredictor, sam_model_registry
-import archive.demo as demo
 
 class ColoredFormatter(logging.Formatter):
     COLORS = {
@@ -65,7 +65,6 @@ class Fish():
         self.processor = SamProcessor.from_pretrained("facebook/sam-vit-huge")
         # module
         self.finetune = self.Finetune(self)
-        self.sam = self.Sam(self)
         
         #self.assets_validation()
     
@@ -99,36 +98,6 @@ class Fish():
         return rgb_image
     
     @staticmethod
-    def prepare_input(cls: type, img: np.ndarray) -> dict:
-        def get_top_brightness_points(np_image, percentage):
-            threshold_value = np.percentile(np_image, float(100 - percentage))
-            bright_areas_mask = np_image > threshold_value
-            return bright_areas_mask
-        def cluster_points(points, eps, min_samples):
-            db = DBSCAN(eps=eps, min_samples=min_samples).fit(points)
-            labels = db.labels_
-            unique_labels = set(labels)
-            clusters = [points[labels == k] for k in unique_labels if k != -1]
-            return clusters
-        def get_bounding_box(points):
-            min_x = np.min(points[:, 1])
-            max_x = np.max(points[:, 1])
-            min_y = np.min(points[:, 0])
-            max_y = np.max(points[:, 0])
-            return [min_x, min_y, max_x, max_y]
-        bright_areas_mask = get_top_brightness_points(img, float(cls.config["predict"]["brightest_percentage"]))
-        bright_points = np.column_stack(np.where(bright_areas_mask))
-        clusters = cluster_points(bright_points,
-                                  eps=float(cls.config["predict"]["dbscan_eps"]),
-                                  min_samples=int(cls.config["predict"]["dbscan_min_samples"]))
-        grouped_input_points = [cluster.tolist() for cluster in clusters]
-        bounding_boxes = [get_bounding_box(np.array(cluster)) for cluster in grouped_input_points]
-        finalized_bboxes = Fish.finalize_bbox(bounding_boxes,
-                                              int(cls.config["predict"]["bbox_expand_px"]),
-                                              int(cls.config["predict"]["bbox_area_threshold"]))
-        return {"bright_points": bright_points, "clusters": clusters, "bboxes": finalized_bboxes}
-    
-    @staticmethod
     def dino_bbox(config: str, weights: str, img: np.ndarray) -> dict:
         def load_image(img: np.ndarray) -> Tuple[np.array, torch.Tensor]:
             def grayscale_to_rgb(grayscale_img) -> np.ndarray:
@@ -150,6 +119,37 @@ class Fish():
             return image, image_transformed
         
         def finalization(image_source: np.ndarray, boxes: torch.Tensor, logits: torch.Tensor, phrases: List[str]) -> list:
+            def filter_rects(rects):
+                def compute_area(rect):
+                    x1, y1, x2, y2 = rect
+                    return (x2 - x1) * (y2 - y1)
+                def compute_intersection_area(rect1, rect2):
+                    x1, y1, x2, y2 = rect1
+                    x3, y3, x4, y4 = rect2
+                    xi1 = max(x1, x3)
+                    yi1 = max(y1, y3)
+                    xi2 = min(x2, x4)
+                    yi2 = min(y2, y4)
+                    if xi1 < xi2 and yi1 < yi2:
+                        return (xi2 - xi1) * (yi2 - yi1)
+                    else:
+                        return 0
+                N = len(rects)
+                to_delete = set()
+                areas = np.array([compute_area(rect) for rect in rects])
+                for i in range(N):
+                    for j in range(i + 1, N):
+                        if j in to_delete:
+                            continue
+                        intersection_area = compute_intersection_area(rects[i], rects[j])
+                        if intersection_area >= 0.9 * min(areas[i], areas[j]):
+                            if areas[i] > areas[j]:
+                                to_delete.add(i)
+                            else:
+                                to_delete.add(j)
+                filtered_rects = [rect for k, rect in enumerate(rects) if k not in to_delete]
+                return np.array(filtered_rects)
+            
             h, w, _ = image_source.shape
             boxes = boxes * torch.Tensor([w, h, w, h])
             xyxy = box_convert(boxes=boxes, in_fmt="cxcywh", out_fmt="xyxy").numpy().astype(np.uint16).tolist()
@@ -160,7 +160,7 @@ class Fish():
                 if area < 200 or area > 160000:
                     continue
                 bboxes.append(box)
-            bboxes = demo.filter_rects(np.array(bboxes)).tolist()
+            bboxes = filter_rects(np.array(bboxes)).tolist()
             return bboxes
         
         model = dino.load_model(config, weights)
@@ -220,79 +220,7 @@ class Fish():
         union = np.logical_or(result, whole_gt)
         iou_score = np.sum(intersection) / np.sum(union)
         return iou_score, whole_gt
-    
-    class Sam():
-        def __init__(self, fish):
-            self.fish: Fish = fish
-        
-        def predict(self, img: np.ndarray) -> np.ndarray:
-            if len(img.shape) != 2:
-                self.fish.logger.error("PRED: Image should be in grayscale")
-                return
-            
-            raw = Fish.prepare_input(self.fish,img)
-            self.fish.logger.info(f"CLU: found {len(raw['bright_points'])} bright points")
-            self.fish.logger.info(f"CLU: found {len(raw['bboxes'])} bounding boxes")
-            
-            img = Fish.hdr_to_rgb(img, int(self.fish.config["predict"]["dynamic_range"]))
-            masks = None
-            
-            sam = sam_model_registry["vit_h"](checkpoint=self.fish.asset_folder_path/"sam"/"sam_vit_h_4b8939.pth")
-            predictor = SamPredictor(sam)
-            sam.to(device="cpu")
-            predictor.set_image(img)
-            input_boxes = torch.tensor(raw["bboxes"], device=predictor.device)
-            transformed_boxes = predictor.transform.apply_boxes_torch(input_boxes, img.shape[:2])
-            masks, _, _ = predictor.predict_torch(point_coords=None,
-                                                  point_labels=None,
-                                                  boxes=transformed_boxes,
-                                                  multimask_output=False)
-            masks = masks.squeeze(1).cpu().numpy().astype(np.uint8)
-            # masks (n, 2048, 2048)
-            
-            self.fish.logger.debug(f"PRED: combination started")
-            result = np.zeros(img.shape[:2], dtype=np.uint8)
-            for ind, bbox in enumerate(raw["bboxes"]):
-                min_x, min_y, max_x, max_y = bbox
-                if max_x <= min_x or max_y <= min_y:
-                    continue
-                seg = masks[ind]
-                seg = seg[min_y:max_y, min_x:max_x]
-                if self.fish.config["predict"]["mask_erosion"].lower() == "true":
-                    er_factor = int(self.fish.config["predict"]["erosion_factor"])
-                    eroded_mask = binary_erosion(seg, structure=np.ones((er_factor, er_factor)))
-                    seg = seg - eroded_mask
-                result[min_y:max_y, min_x:max_x] = seg
-            self.fish.logger.info("PRED: combination completed")
-            
-            return raw, masks, result
-        
-        def info(self, img: np.ndarray, gt: np.ndarray) -> None:
-            raw, masks, result = self.predict(img)
-            fig, ax = plt.subplots(1, figsize=(8, 8))
-            ax.imshow(img, cmap='gray')
-            
-            if self.fish.config["info"]["overlay"].lower() == "true":
-                overlay = np.zeros((img.shape[0], img.shape[1], 4), dtype=np.uint8)
-                overlay[result == 1] = np.array([255, 255, 0, 255])
-                ax.imshow(overlay)
-            if self.fish.config["info"]["bbox_preview"].lower() == "true":
-                for bbox in raw["bboxes"]:
-                    min_x, min_y, max_x, max_y = bbox
-                    rect = patches.Rectangle((min_x, min_y),
-                                             max_x - min_x,
-                                             max_y - min_y,
-                                             linewidth=float(self.fish.config["info"]["bbox_preview_line_width"]),
-                                             edgecolor='r',
-                                             facecolor='none')
-                    ax.add_patch(rect)
-                if self.fish.config["info"]["show_cluster"].lower() == "true":
-                    for cluster in raw["clusters"]:
-                        ax.scatter(cluster[:, 1], cluster[:, 0], s=1, c='b')
-                if self.fish.config["info"]["show_brightest_point"].lower() == "true":
-                    ax.scatter(raw["bright_points"][:, 1], raw["bright_points"][:, 0], s=0.2, c='g')
-            plt.show()
-    
+ 
     class Finetune():
         def __init__(self, fish):
             self.fish: Fish = fish
@@ -305,10 +233,10 @@ class Fish():
                 self.fish.logger.error("PRED: Image should be in grayscale")
                 return
             
-            # raw = Fish.prepare_input(self.fish, img)
-            raw = Fish.dino_bbox(self.fish.config["dino"]["config"],
-                                 self.fish.config["dino"]["weights"],
-                                 img)
+            gdino_config = pathlib.Path(groundingdino.__path__[0]) / self.fish.config["dino"]["config"]
+            gdino_weights = pathlib.Path(groundingdino.__path__[0]) / self.fish.config["dino"]["weights"]
+            
+            raw = Fish.dino_bbox(gdino_config, gdino_weights, img)
             self.fish.logger.info(f"CLU: found {len(raw['bright_points'])} bright points")
             self.fish.logger.info(f"CLU: found {len(raw['bboxes'])} bounding boxes")
             

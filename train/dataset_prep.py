@@ -80,12 +80,11 @@ def get_masks_from_mat(mat_file, dir_name):
             if np.all(mask == 0):
                 continue
             y_pos, x_pos = pos
+            y_pos, x_pos = int(y_pos), int(x_pos)
             mask_height, mask_width = mask.shape
             binary_mask = mask > 0
             y_end, x_end = min(y_pos + mask_height, 2048), min(x_pos + mask_width, 2048)
-            single_cell_data[counter, y_pos:y_end, x_pos:x_end] = binary_mask[
-                : y_end - y_pos, : x_end - x_pos
-            ]
+            single_cell_data[counter, y_pos:y_end, x_pos:x_end] = binary_mask[:y_end - y_pos, :x_end - x_pos]
             counter += 1
         if len(single_cell_data) == 0:
             return None

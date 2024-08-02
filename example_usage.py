@@ -13,4 +13,3 @@ mat = dprep.get_masks_from_mat(pathlib.Path("./assets/tif/1-50_Hong/1-50_finishe
 gt_masks = mat["masks"][mat["name"].index("MAX_KOa_w1-359 DAPI_s032.tif")]
 gt_pos = mat["xy"][mat["name"].index("MAX_KOa_w1-359 DAPI_s032.tif")]
 fishcore.finetune.info(img, gt_masks, gt_pos)
-
