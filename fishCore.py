@@ -53,6 +53,11 @@ class Fish():
         formatter = ColoredFormatter("[%(asctime)s][%(levelname)s] %(message)s")
         console_handler.setFormatter(formatter)
         self.logger.addHandler(console_handler)
+        # transformers logging level
+        loggers = [logging.getLogger(name) for name in logging.root.manager.loggerDict]
+        for logger in loggers:
+            if "transformers" in logger.name.lower():
+                logger.setLevel(logging.ERROR)
         # asset
         self.asset_folder_path = pathlib.Path(self.config["general"]["asset_folder_path"])
         self.supported_version = self.config["general"]["supported_version"].split(",")
@@ -63,6 +68,9 @@ class Fish():
         self.model = None
         self.model_config = SamConfig.from_pretrained("facebook/sam-vit-base")
         self.processor = SamProcessor.from_pretrained("facebook/sam-vit-huge")
+        # dino
+        self.gdino_config = pathlib.Path(groundingdino.__path__[0]) / self.config["dino"]["config"]
+        self.gdino_weights = pathlib.Path(groundingdino.__path__[0]) / self.config["dino"]["weights"]
         # module
         self.finetune = self.Finetune(self)
         
@@ -181,21 +189,6 @@ class Fish():
         
         finalized_bboxes = finalization(image_source, boxes, logits, phrases)
         return {"bright_points": "DINO", "clusters": "DINO", "bboxes": finalized_bboxes}
-        
-    @staticmethod
-    def finalize_bbox(orignal_bbox: list, expand_fct: int, bbox_area_threshold: int):
-        bboxes = []
-        for box in orignal_bbox:
-            min_x, min_y, max_x, max_y = box
-            area = (max_x - min_x) * (max_y - min_y)
-            if area < bbox_area_threshold:
-                continue
-            expanded_bbox = [np.clip(min_x - expand_fct, 0, 2048),
-                             np.clip(min_y - expand_fct, 0, 2048),
-                             np.clip(max_x + expand_fct, 0, 2048),
-                             np.clip(max_y + expand_fct, 0, 2048)]
-            bboxes.append(expanded_bbox)
-        return bboxes
     
     @staticmethod
     def cal_iou(result: np.ndarray, gt: list, gt_pos: list) -> Tuple[float, np.ndarray]:
@@ -220,6 +213,9 @@ class Fish():
         union = np.logical_or(result, whole_gt)
         iou_score = np.sum(intersection) / np.sum(union)
         return iou_score, whole_gt
+    
+    def AppIntDINOwrapper(self, img: np.ndarray) -> list[list]:
+        return Fish.dino_bbox(self.gdino_config, self.gdino_weights, img)["bboxes"]
  
     class Finetune():
         def __init__(self, fish):
@@ -233,10 +229,7 @@ class Fish():
                 self.fish.logger.error("PRED: Image should be in grayscale")
                 return
             
-            gdino_config = pathlib.Path(groundingdino.__path__[0]) / self.fish.config["dino"]["config"]
-            gdino_weights = pathlib.Path(groundingdino.__path__[0]) / self.fish.config["dino"]["weights"]
-            
-            raw = Fish.dino_bbox(gdino_config, gdino_weights, img)
+            raw = Fish.dino_bbox(self.fish.gdino_config, self.fish.gdino_weights, img)
             self.fish.logger.info(f"CLU: found {len(raw['bright_points'])} bright points")
             self.fish.logger.info(f"CLU: found {len(raw['bboxes'])} bounding boxes")
             
