@@ -7,7 +7,75 @@ from tkinter import filedialog, messagebox
 from matplotlib.figure import Figure 
 from matplotlib.backends.backend_tkagg import (FigureCanvasTkAgg, NavigationToolbar2Tk)
 from matplotlib.patches import Rectangle
+from matplotlib.backend_bases import MouseEvent
 import fishCore
+
+class box():
+    __buffer: box = None
+    def __init__(self, bbox: list, gui: FishGUI, master: abstract):
+        self.gui = gui
+        self.__bbox = bbox
+        min_x, min_y, max_x, max_y = self.__bbox
+        self.__rect = Rectangle((min_x, min_y),
+                                max_x - min_x,
+                                max_y - min_y,
+                                linewidth=float(self.gui.getBackEnd().config["info"]["bbox_preview_line_width"]),
+                                edgecolor='r',
+                                facecolor='none')
+        self.__draw: bool = False
+        self.__master: abstract = master
+        self.__selected: bool = False
+    
+    @property
+    def rect(self) -> Rectangle:
+        return self.__rect
+    
+    @property
+    def selected(self) -> bool:
+        return self.__selected
+    @selected.setter
+    def selected(self, value: bool):
+        self.__selected = value
+        self.draw = False
+        if value:
+            self.rect.set_edgecolor('g')
+        else:
+            self.rect.set_edgecolor('r')
+        self.draw = True
+    
+    @property
+    def draw(self):
+        return self.__draw
+    @draw.setter
+    def draw(self, value: bool):
+        if self.__draw == value: return
+        if value:
+            self.gui.getStove().subplot.add_patch(self.rect)
+            self.gui.getStove().canvas.draw()
+        else:
+            self.rect.remove()
+            self.gui.getStove().canvas.draw()
+        self.__draw = value
+    
+    def contains(self, x: float, y: float) -> bool:
+        min_x, min_y, max_x, max_y = self.__bbox
+        return min_x <= x <= max_x and min_y <= y <= max_y
+    
+    @classmethod
+    def setBuffer(cls, box: box):
+        cls.__buffer = box
+    @classmethod
+    def getBuffer(cls) -> box:
+        return cls.__buffer
+    @classmethod
+    def clearBuffer(cls):
+        cls.__buffer = None
+    @classmethod
+    def clearBufferAndDeselect(cls):
+        current = cls.getBuffer()
+        if current: current.selected = False
+        cls.__buffer = None
+        
 
 class seasoning():
     def __init__(self, gui: FishGUI):
@@ -36,11 +104,12 @@ class stove():
         self.subplot = self.figure.add_subplot(111)
         self.subplot.set_axis_off()
         self.canvas = FigureCanvasTkAgg(self.figure, self.pit)
+        self.canvas.mpl_connect("button_press_event", self.onCanvasClick)
         self.toolbar = NavigationToolbar2Tk(self.canvas, self.pit)
         self.toolbar.update()
         
         self.__onLoad: abstract = None
-    
+
     def pack(self):
         self.pit.pack(side=tkinter.LEFT, fill=tkinter.BOTH, expand=True)
         self.sep.pack(side=tkinter.LEFT, fill=tkinter.Y)
@@ -53,23 +122,20 @@ class stove():
         self.subplot.imshow(self.getLoaded().getImgNumpyRGB())
         self.subplot.set_axis_off()
         self.canvas.draw()
-    
-    def cookBbox(self, bboxes: list[list]):
-        for bbox in bboxes:
-            min_x, min_y, max_x, max_y = bbox
-            rect = Rectangle((min_x, min_y),
-                             max_x - min_x,
-                             max_y - min_y,
-                             linewidth=float(self.gui.getBackEnd().config["info"]["bbox_preview_line_width"]),
-                             edgecolor='r',facecolor='none')
-            self.subplot.add_patch(rect)
-        self.canvas.draw()
-    
     def dump(self):
         self.clearLoaded()
         self.subplot.clear()
         self.subplot.set_axis_off()
         self.canvas.draw()
+        
+    def onCanvasClick(self, event: MouseEvent):
+        if stove.isLeftClick(event):
+            if self.gui.getFuncButton().bboxButtonPressed():
+                target = self.getLoaded().findBoxFromPoint(event.xdata, event.ydata)
+                box.clearBufferAndDeselect()
+                if target:
+                    target.selected = True
+                    box.setBuffer(target)
     
     def isLoaded(self) -> bool:
         return self.__onLoad is not None
@@ -79,6 +145,10 @@ class stove():
         self.__onLoad = abs
     def clearLoaded(self):
         self.__onLoad = None
+    
+    @staticmethod
+    def isLeftClick(event: MouseEvent) -> bool:
+        return event.button == 1
 
 class abstract():
     __pool: list[abstract] = []
@@ -103,28 +173,78 @@ class abstract():
         self.__label.bind("<Button-1>", self.on_click)
         
         self.__img_pil_thumbnail_bbox = None
-        self.__bbox: list[list] = None
+        self.__img_pil_thumbnail_select = None
+        self.__img_pil_thumbnail_crossout = None
+        self.__thumbnail: str = None
+        self.__bbox: list[box] = []
         self.__highlighted: str = None
+        self.__selected: bool = True
+        self.__drawBbox: bool = False
         
         abstract.addToPool(self)
     
     @property
-    def bboxThumbnail(self) -> ImageTk.PhotoImage:
-        if not self.__img_pil_thumbnail_bbox:
-            self.__img_pil_thumbnail_bbox = self.__img_pil_thumbnail.copy()
-            ImageDraw.Draw(self.__img_pil_thumbnail_bbox).ellipse((49, 5, 59, 15), fill=(0,255,0))
-        self.__img_pil_thumbnail_bbox = ImageTk.PhotoImage(self.__img_pil_thumbnail_bbox)
-        return self.__img_pil_thumbnail_bbox
+    def thumbnail(self) -> str:
+        return self.__thumbnail
+    @thumbnail.setter
+    def thumbnail(self, value: str):
+        self.__thumbnail = value
+        if value == "default":
+            self.getLabel().config(image=self.__img_tk_thumbnail)
+        elif value == "bbox":
+            if not self.__img_pil_thumbnail_bbox:
+                self.__img_pil_thumbnail_bbox = self.__img_pil_thumbnail.copy()
+                ImageDraw.Draw(self.__img_pil_thumbnail_bbox).ellipse((49, 5, 59, 15), fill=(0,0,255))
+                self.__img_pil_thumbnail_bbox = ImageTk.PhotoImage(self.__img_pil_thumbnail_bbox)
+            self.getLabel().config(image=self.__img_pil_thumbnail_bbox)
+        elif value == "selected":
+            if not self.__img_pil_thumbnail_select:
+                self.__img_pil_thumbnail_select = self.__img_pil_thumbnail.copy()
+                ImageDraw.Draw(self.__img_pil_thumbnail_select).ellipse((5, 5, 15, 15), fill=(0,255,0))
+                self.__img_pil_thumbnail_select = ImageTk.PhotoImage(self.__img_pil_thumbnail_select)
+            self.getLabel().config(image=self.__img_pil_thumbnail_select)
+        elif value == "crossout":
+            if not self.__img_pil_thumbnail_crossout:
+                self.__img_pil_thumbnail_crossout = self.__img_pil_thumbnail.copy()
+                ImageDraw.Draw(self.__img_pil_thumbnail_crossout).line((5, 5, 15, 15), fill=(255,0,0), width=2)
+                ImageDraw.Draw(self.__img_pil_thumbnail_crossout).line((5, 15, 15, 5), fill=(255,0,0), width=2)
+                self.__img_pil_thumbnail_crossout = ImageTk.PhotoImage(self.__img_pil_thumbnail_crossout)
+            self.getLabel().config(image=self.__img_pil_thumbnail_crossout)
+    @thumbnail.deleter
+    def thumbnail(self):
+        self.getLabel().pack_forget()
     
     @property
-    def bbox(self) -> list[list]:
-        if self.__bbox is None:
-            self.bbox = self.gui.getBackEnd().AppIntDINOwrapper(self.__img_np_gs)
+    def selected(self) -> bool:
+        return self.__selected
+    @selected.setter
+    def selected(self, value: bool):
+        if value:
+            self.thumbnail = "selected"
+            self.__selected = True
+        else:
+            self.thumbnail = "crossout"
+            self.__selected = False
+    
+    @property
+    def bbox(self) -> list[box]:
+        if not len(self.__bbox):
+            raw = self.gui.getBackEnd().AppIntDINOwrapper(self.__img_np_gs) # list[list]
+            for each in raw:
+                o = box(each, self.gui, self)
+                self.__bbox.append(o)
         return self.__bbox
-    @bbox.setter
-    def bbox(self, bboxes: list[list]):
-        self.__bbox = bboxes
-        self.getLabel().config(image=self.bboxThumbnail)
+    
+    @property
+    def drawBbox(self) -> bool:
+        return self.__drawBbox
+    @drawBbox.setter
+    def drawBbox(self, value: bool):
+        for b in self.bbox:
+            b.draw = value
+        self.thumbnail = "bbox" if value else "default"
+        self.gui.getStove().canvas.draw()
+        self.__drawBbox = value
     
     @property
     def highlighted(self) -> str:
@@ -138,18 +258,27 @@ class abstract():
         self.__highlighted = None
         self.getLabel().config(borderwidth=0, background="black")
     
-    def on_click(self, event):
+    def on_click(self, event):            
         self.gui.getStove().dump()
-        self.highlighted = "red"
         b = abstract.getBuffer()
         if b: del b.highlighted
+        self.highlighted = "red"
+        if self.gui.getFuncButton().selectButtonPressed():
+            self.selected = not self.selected
+        elif self.gui.getFuncButton().bboxButtonPressed():
+            buffer = box.getBuffer()
+            if buffer: buffer.selected = False
+            if b: b.drawBbox = False
+            self.drawBbox = True
         abstract.setBuffer(self)
         self.gui.getStove().cook(self)
     
     @classmethod
     def sendFirst(cls):
-        target: abstract = cls.getPool()[0]
-        target.on_click(None)
+        for target in cls.getPool():
+            if target.selected:
+                target.on_click(None)
+                return
     @classmethod
     def getPool(cls) -> list[abstract]:
         return cls.__pool
@@ -162,6 +291,20 @@ class abstract():
     @classmethod
     def getBuffer(cls) -> abstract:
         return cls.__buffer
+    @classmethod
+    def selectAll(cls):
+        for abs in cls.getPool():
+            abs.selected = True
+    @classmethod
+    def removeUnselected(cls):
+        for abs in cls.getPool():
+            abs.thumbnail = "default"
+            if not abs.selected: del abs.thumbnail
+        cls.sendFirst()
+    @classmethod
+    def saveBboxChanges(cls):
+        cls.getBuffer().drawBbox = False
+        cls.sendFirst()
         
     @staticmethod
     def grayscale_to_rgb(grayscale_img) -> np.ndarray:
@@ -173,6 +316,12 @@ class abstract():
         dynamic_exp_factor = 255.0 / np.max(rgb_img[:, :, 0])
         brightened_image = np.clip(rgb_img * dynamic_exp_factor, 0, 255).astype(np.uint8)
         return brightened_image
+    
+    def findBoxFromPoint(self, x: float, y: float) -> box:
+        for b in self.bbox:
+            if b.contains(x, y):
+                return b
+        return None
     
     def getImgNumpyGreyscale(self) -> np.ndarray:
         return self.__img_np_gs
@@ -205,16 +354,46 @@ class tifSequence():
         for path in tif_files:
             _ = abstract(path, self.gallery_frame, self.gui)
         abstract.sendFirst()
+    
+    def resetPosition(self):
+        self.base.xview_moveto(0)
+        self.base.yview_moveto(0)
         
 class funcButton():
     def __init__(self, gui: FishGUI):
         self.gui = gui
         container = gui.getLowerFrame().getFrameC()
-        self.IMPORT = tkinter.Button(container, text="Import", height=2, command=self.IMPORT_call)
-        self.SELECT = tkinter.Button(container, text="Select", height=2)
-        self.BBOX = tkinter.Button(container, text="BBox", height=2, command=self.BBOX_call)
-        self.SEGMENT = tkinter.Button(container, text="Segment", height=2)
-        self.SAVE = tkinter.Button(container, text="Save", height=2)
+        self.IMPORT = tkinter.Button(container,
+                                     text="Import",
+                                     height=2,
+                                     relief=tkinter.RAISED,
+                                     command=self.IMPORT_call)
+        self.__select_toggle = tkinter.IntVar(value=0)
+        self.SELECT = tkinter.Checkbutton(container,
+                                          text="Select",
+                                          height=2,
+                                          variable=self.__select_toggle,
+                                          onvalue=1,
+                                          offvalue=0,
+                                          indicatoron=False,
+                                          command=self.SELECT_call)
+        self.__bbox_toggle = tkinter.IntVar(value=0)
+        self.BBOX = tkinter.Checkbutton(container,
+                                        text="BBOX",
+                                        height=2,
+                                        variable=self.__bbox_toggle,
+                                        onvalue=1,
+                                        offvalue=0,
+                                        indicatoron=False,
+                                        command=self.BBOX_call)
+        self.SEGMENT = tkinter.Button(container,
+                                      text="Segment",
+                                      height=2,
+                                      relief=tkinter.RAISED)
+        self.SAVE = tkinter.Button(container,
+                                   text="Save",
+                                   height=2,
+                                   relief=tkinter.RAISED)
     
     def pack(self):
         self.IMPORT.pack(side=tkinter.LEFT, expand=True, fill=tkinter.X)
@@ -230,6 +409,18 @@ class funcButton():
         self.SEGMENT.pack_forget()
         self.SAVE.pack_forget()
     
+    def getButtonWidget(self, name: str):
+        return {"IMPORT": self.IMPORT,
+                "SELECT": self.SELECT,
+                "BBOX": self.BBOX,
+                "SEGMENT": self.SEGMENT,
+                "SAVE": self.SAVE}[name]
+    
+    def selectButtonPressed(self) -> bool:
+        return self.__select_toggle.get()
+    def bboxButtonPressed(self) -> bool:
+        return self.__bbox_toggle.get()
+    
     def IMPORT_call(self):
         folder_path = filedialog.askdirectory()
         if folder_path:
@@ -240,9 +431,17 @@ class funcButton():
     def BBOX_call(self):
         if not self.gui.getStove().isLoaded():
             FishGUI.popBox("w", "Image Not Loaded", "Please select an image first")
-        l = self.gui.getStove().getLoaded()
-        self.gui.getStove().cookBbox(l.bbox)
-        
+        if self.bboxButtonPressed():
+            abstract.sendFirst()
+        elif not self.bboxButtonPressed():
+            abstract.saveBboxChanges()
+
+    def SELECT_call(self):
+        if self.selectButtonPressed():
+            abstract.selectAll()
+        elif not self.selectButtonPressed():
+            abstract.removeUnselected()
+            self.gui.getTifSequence().resetPosition()
 
 class lf():
     def __init__(self, gui: FishGUI):
