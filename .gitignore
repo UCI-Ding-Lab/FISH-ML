@@ -166,6 +166,7 @@ cython_debug/
 331_fine_tune_SAM_mito.ipynb
 *.tif
 *.m
+*.pkl
 
 # lab folders
 /60min_tiff

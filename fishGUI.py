@@ -23,7 +23,21 @@ class progress():
         if not f: f = "fish"
         f = f + ".pkl"
         with open(f, "wb") as file:
-            pickle.dump(abstract.getPool(), file)
+            pickle.dump(abstract.zip(), file)
+        messagebox.showinfo("Done", "Session saved as " + f)
+    
+    @staticmethod
+    def load(gui: FishGUI):
+        f = filedialog.askopenfilename(filetypes=[("Progress files", "*.pkl")])
+        if not f: return
+        with open(f, "rb") as file:
+            data = pickle.load(file)
+        for b in data:
+            bund: bundle = b
+            abs = abstract(bund.path, gui.getTifSequence().gallery_frame, gui)
+            abs.bbox = [box(each, gui) for each in bund.bbox]
+        abstract.sendFirst()
+
 class anchor():
     __buffer: anchor = None
     def __init__(self, x: float, y: float, gui: FishGUI, master: box, location: str):
@@ -187,16 +201,14 @@ class seasoning():
     def __init__(self, gui: FishGUI):
         self.gui = gui
         self.toolbank = tkinter.Frame(self.gui.getLowerFrame().getFrameA(), width=250, background="grey")
-        self.button1 = tkinter.Button(self.toolbank, height=2, text="FuncA")
-        self.button2 = tkinter.Button(self.toolbank, height=2, text="FuncB")
-        self.button3 = tkinter.Button(self.toolbank, height=2, text="FuncC")
+        self.button1 = tkinter.Button(self.toolbank, height=2, text="Save Progress", command=progress.save)
+        self.button2 = tkinter.Button(self.toolbank, height=2, text="Load Progress", command=lambda: progress.load(gui))
         
     
     def pack(self):
         self.toolbank.pack(side=tkinter.RIGHT, expand=True, fill=tkinter.BOTH)
         self.button1.pack(side=tkinter.TOP, fill=tkinter.X)
         self.button2.pack(side=tkinter.TOP, fill=tkinter.X)
-        self.button3.pack(side=tkinter.TOP, fill=tkinter.X)
 
 class stove():
     def __init__(self, gui: FishGUI):
@@ -386,6 +398,9 @@ class abstract():
                 o = box(each, self.gui)
                 self.__bbox.append(o)
         return self.__bbox
+    @bbox.setter
+    def bbox(self, value: list[box]):
+        self.__bbox = value
     
     @property
     def boundingBoxRevised(self) -> list[list]:
@@ -467,10 +482,11 @@ class abstract():
     def zip(cls) -> list[bundle]:
         result = []
         for abs in cls.getPool():
-            b = bundle()
-            b.path = abs.getAbsPath()
-            b.bbox = abs.boundingBoxRevised
-            result.append(b)
+            if abs.selected:
+                b = bundle()
+                b.path = abs.getAbsPath()
+                b.bbox = abs.boundingBoxRevised
+                result.append(b)
         return result
         
     @staticmethod
