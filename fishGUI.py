@@ -1,18 +1,96 @@
 from __future__ import annotations
 import tkinter
 import pathlib
+import pickle
 import numpy as np
 from PIL import (Image, ImageTk, ImageDraw)
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, simpledialog
 from matplotlib.figure import Figure 
 from matplotlib.backends.backend_tkagg import (FigureCanvasTkAgg, NavigationToolbar2Tk)
-from matplotlib.patches import Rectangle
+from matplotlib.patches import Rectangle, Circle
 from matplotlib.backend_bases import MouseEvent
 import fishCore
 
+class bundle():
+    def __init__(self) -> None:
+        self.path: pathlib.Path = None
+        self.bbox: list[list] = None
+
+class progress():
+    @staticmethod
+    def save():
+        f = simpledialog.askstring("Save", "Session Name: ")
+        if not f: f = "fish"
+        f = f + ".pkl"
+        with open(f, "wb") as file:
+            pickle.dump(abstract.getPool(), file)
+class anchor():
+    __buffer: anchor = None
+    def __init__(self, x: float, y: float, gui: FishGUI, master: box, location: str):
+        self.gui = gui
+        self.__color: str = 'cyan'
+        self.__draw: bool = False
+        self.__selected: bool = False
+        self.__loc: str = location
+        self.__patch = Circle((x, y), radius=10, linewidth=0.5, edgecolor=self.color, facecolor='none')
+    
+    @property
+    def patch(self) -> Circle:
+        return self.__patch
+    @property
+    def location(self) -> str:
+        return self.__loc
+    
+    @property
+    def color(self) -> str:
+        return self.__color
+    @color.setter
+    def color(self, value: str):
+        self.__color = value
+        self.draw = False
+        self.patch.set_edgecolor(value)
+        self.draw = True
+    
+    @property
+    def draw(self) -> bool:
+        return self.__draw
+    @draw.setter
+    def draw(self, value: bool):
+        if self.__draw == value: return
+        if value:
+            self.gui.getStove().subplot.add_patch(self.patch)
+        else:
+            self.patch.remove()
+        self.gui.getStove().canvas.draw()
+        self.__draw = value
+    
+    @property
+    def selected(self) -> bool:
+        return self.__selected
+    @selected.setter
+    def selected(self, value: bool):
+        if self.__selected == value: return
+        self.color = 'b' if value else 'cyan'
+        self.__selected = value
+    
+    def contains(self, x: float, y: float) -> bool:
+        p = self.gui.getStove().subplot.transData.transform((x, y))
+        return self.patch.contains_point(p)
+    
+    @classmethod
+    def setBuffer(cls, anchor: anchor):
+        cls.__buffer = anchor
+    @classmethod
+    def getBuffer(cls) -> anchor:
+        return cls.__buffer
+    @classmethod
+    def clearBuffer(cls):
+        if cls.getBuffer(): cls.getBuffer().selected = False
+        cls.setBuffer(None)
+
 class box():
     __buffer: box = None
-    def __init__(self, bbox: list, gui: FishGUI, master: abstract):
+    def __init__(self, bbox: list, gui: FishGUI):
         self.gui = gui
         self.__bbox = bbox
         min_x, min_y, max_x, max_y = self.__bbox
@@ -22,13 +100,25 @@ class box():
                                 linewidth=float(self.gui.getBackEnd().config["info"]["bbox_preview_line_width"]),
                                 edgecolor='r',
                                 facecolor='none')
+        self.__anchors = {"bottom-left": anchor(min_x, min_y, gui, self, "bottom-left"),
+                          "bottom-right": anchor(max_x, min_y, gui, self, "bottom-right"),
+                          "top-left": anchor(min_x, max_y, gui, self, "top-left"),
+                          "top-right": anchor(max_x, max_y, gui, self, "top-right")}
         self.__draw: bool = False
-        self.__master: abstract = master
         self.__selected: bool = False
     
     @property
     def rect(self) -> Rectangle:
         return self.__rect
+    @property
+    def anchors(self) -> dict[str,anchor]:
+        return self.__anchors
+    @property
+    def final(self) -> list:
+        return [self.rect.get_x(),
+                self.rect.get_y(),
+                self.rect.get_x() + self.rect.get_width(),
+                self.rect.get_y() + self.rect.get_height()]
     
     @property
     def selected(self) -> bool:
@@ -39,8 +129,15 @@ class box():
         self.draw = False
         if value:
             self.rect.set_edgecolor('g')
+            for anc in self.__anchors.values():
+                anc.draw = True
+                anc.selected = False
         else:
             self.rect.set_edgecolor('r')
+            for anc in self.__anchors.values():
+                anc.selected = False
+                anc.draw = False
+        self.gui.getStove().canvas.draw()
         self.draw = True
     
     @property
@@ -51,15 +148,24 @@ class box():
         if self.__draw == value: return
         if value:
             self.gui.getStove().subplot.add_patch(self.rect)
-            self.gui.getStove().canvas.draw()
         else:
             self.rect.remove()
-            self.gui.getStove().canvas.draw()
+        self.gui.getStove().canvas.draw()
         self.__draw = value
     
     def contains(self, x: float, y: float) -> bool:
-        min_x, min_y, max_x, max_y = self.__bbox
-        return min_x <= x <= max_x and min_y <= y <= max_y
+        p = self.gui.getStove().subplot.transData.transform((x, y))
+        return self.rect.contains_point(p)
+    def anchorContains(self, x: float, y: float) -> str:
+        for k, v in self.anchors.items():
+            if v.contains(x, y):
+                return k
+        return None
+    def anchorUpdate(self):
+        self.anchors["bottom-left"].patch.set_center((self.rect.get_x(), self.rect.get_y()))
+        self.anchors["bottom-right"].patch.set_center((self.rect.get_x() + self.rect.get_width(), self.rect.get_y()))
+        self.anchors["top-left"].patch.set_center((self.rect.get_x(), self.rect.get_y() + self.rect.get_height()))
+        self.anchors["top-right"].patch.set_center((self.rect.get_x() + self.rect.get_width(), self.rect.get_y() + self.rect.get_height()))
     
     @classmethod
     def setBuffer(cls, box: box):
@@ -105,6 +211,8 @@ class stove():
         self.subplot.set_axis_off()
         self.canvas = FigureCanvasTkAgg(self.figure, self.pit)
         self.canvas.mpl_connect("button_press_event", self.onCanvasClick)
+        self.canvas.mpl_connect("button_release_event", self.onCanvasRelease)
+        self.canvas.mpl_connect("motion_notify_event", self.onCanvasDrag)
         self.toolbar = NavigationToolbar2Tk(self.canvas, self.pit)
         self.toolbar.update()
         
@@ -131,11 +239,55 @@ class stove():
     def onCanvasClick(self, event: MouseEvent):
         if stove.isLeftClick(event):
             if self.gui.getFuncButton().bboxButtonPressed():
+                
+                # check if click on anchor
+                if box.getBuffer() and box.getBuffer().selected:
+                    anchorName = box.getBuffer().anchorContains(event.xdata, event.ydata)
+                    if anchorName:
+                        target = box.getBuffer().anchors[anchorName]
+                        target.selected = True
+                        anchor.setBuffer(target)
+                        return
+                
+                # check if click on box
                 target = self.getLoaded().findBoxFromPoint(event.xdata, event.ydata)
                 box.clearBufferAndDeselect()
                 if target:
                     target.selected = True
                     box.setBuffer(target)
+    def onCanvasRelease(self, event: MouseEvent):
+        if self.gui.getFuncButton().bboxButtonPressed():
+            anchor.clearBuffer()
+    def onCanvasDrag(self, event: MouseEvent):
+        if self.gui.getFuncButton().bboxButtonPressed():
+            a = anchor.getBuffer()
+            b = box.getBuffer()
+            if a and a.selected and b and b.selected:
+                if event.inaxes != b.rect.axes: return
+                x0, y0 = b.rect.get_xy()
+                width, height = b.rect.get_width(), b.rect.get_height()
+                if a.location == "bottom-left":
+                    new_x0 = event.xdata
+                    new_y0 = event.ydata
+                    width += x0 - new_x0
+                    height += y0 - new_y0
+                    b.rect.set_xy((new_x0, new_y0))
+                elif a.location == "bottom-right":
+                    width = event.xdata - x0
+                    height += y0 - event.ydata
+                    b.rect.set_xy((x0, event.ydata))
+                elif a.location == "top-right":
+                    width = event.xdata - x0
+                    height = event.ydata - y0
+                elif a.location == "top-left":
+                    new_x0 = event.xdata
+                    height = event.ydata - y0
+                    width += x0 - new_x0
+                    b.rect.set_xy((new_x0, y0))
+                b.rect.set_width(width)
+                b.rect.set_height(height)
+                b.anchorUpdate()
+                self.canvas.draw()
     
     def isLoaded(self) -> bool:
         return self.__onLoad is not None
@@ -231,9 +383,13 @@ class abstract():
         if not len(self.__bbox):
             raw = self.gui.getBackEnd().AppIntDINOwrapper(self.__img_np_gs) # list[list]
             for each in raw:
-                o = box(each, self.gui, self)
+                o = box(each, self.gui)
                 self.__bbox.append(o)
         return self.__bbox
+    
+    @property
+    def boundingBoxRevised(self) -> list[list]:
+        return [b.final for b in self.bbox]
     
     @property
     def drawBbox(self) -> bool:
@@ -242,6 +398,8 @@ class abstract():
     def drawBbox(self, value: bool):
         for b in self.bbox:
             b.draw = value
+            if not value:
+                box.clearBufferAndDeselect()
         self.thumbnail = "bbox" if value else "default"
         self.gui.getStove().canvas.draw()
         self.__drawBbox = value
@@ -305,6 +463,15 @@ class abstract():
     def saveBboxChanges(cls):
         cls.getBuffer().drawBbox = False
         cls.sendFirst()
+    @classmethod
+    def zip(cls) -> list[bundle]:
+        result = []
+        for abs in cls.getPool():
+            b = bundle()
+            b.path = abs.getAbsPath()
+            b.bbox = abs.boundingBoxRevised
+            result.append(b)
+        return result
         
     @staticmethod
     def grayscale_to_rgb(grayscale_img) -> np.ndarray:
@@ -329,6 +496,8 @@ class abstract():
         return self.__img_np_rgb
     def getLabel(self) -> tkinter.Label:
         return self.__label
+    def getAbsPath(self) -> pathlib.Path:
+        return self.__abs_path
 
 class tifSequence():
     def __init__(self, gui: FishGUI):
@@ -442,6 +611,10 @@ class funcButton():
         elif not self.selectButtonPressed():
             abstract.removeUnselected()
             self.gui.getTifSequence().resetPosition()
+    
+    def SEGMENT_call(self):
+        if not self.gui.getStove().isLoaded():
+            FishGUI.popBox("w", "Image Not Loaded", "Please select an image first")
 
 class lf():
     def __init__(self, gui: FishGUI):
