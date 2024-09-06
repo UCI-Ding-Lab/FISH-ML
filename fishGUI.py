@@ -158,7 +158,8 @@ class box():
         self.__anchors = {"bottom-left": anchor(min_x, min_y, gui, self, "bottom-left"),
                           "bottom-right": anchor(max_x, min_y, gui, self, "bottom-right"),
                           "top-left": anchor(min_x, max_y, gui, self, "top-left"),
-                          "top-right": anchor(max_x, max_y, gui, self, "top-right")}
+                          "top-right": anchor(max_x, max_y, gui, self, "top-right"),
+                          "pos-anchor": anchor((max_x - min_x) // 2 + min_x, max_y, gui, self, "pos-anchor")}
         self.__draw: bool = False
         self.__selected: bool = False
     
@@ -221,7 +222,7 @@ class box():
         self.anchors["bottom-right"].patch.set_center((self.rect.get_x() + self.rect.get_width(), self.rect.get_y()))
         self.anchors["top-left"].patch.set_center((self.rect.get_x(), self.rect.get_y() + self.rect.get_height()))
         self.anchors["top-right"].patch.set_center((self.rect.get_x() + self.rect.get_width(), self.rect.get_y() + self.rect.get_height()))
-    
+        self.anchors["pos-anchor"].patch.set_center((self.rect.get_x() + self.rect.get_width() / 2, self.rect.get_y() + self.rect.get_height()))
     @classmethod
     def setBuffer(cls, box: box):
         cls.__buffer = box
@@ -301,7 +302,7 @@ class stove():
                         target.selected = True
                         anchor.setBuffer(target)
                         return
-                
+
                 # check if click on box
                 target = self.getLoaded().findBoxFromPoint(event.xdata, event.ydata)
                 box.clearBufferAndDeselect()
@@ -337,6 +338,12 @@ class stove():
                     height = event.ydata - y0
                     width += x0 - new_x0
                     b.rect.set_xy((new_x0, y0))
+                elif a.location == "pos-anchor":
+                    dx = event.xdata - (b.rect.get_x() + width / 2)
+                    dy = event.ydata - (b.rect.get_y() + height)
+                    new_x0 = x0 + dx
+                    new_y0 = y0 + dy
+                    b.rect.set_xy((new_x0, new_y0))
                 b.rect.set_width(width)
                 b.rect.set_height(height)
                 b.anchorUpdate()
@@ -754,7 +761,7 @@ class lf():
 class FishGUI(object):
     def __init__(self, root):
         self.__root: tkinter.Tk = root
-        self.__root.title("Quick Seg")
+        self.__root.title("FISH UI Prototype")
         self.__root.geometry("1000x800")
         
         self.__be: fishCore.Fish = fishCore.Fish(pathlib.Path("./config.ini"))
