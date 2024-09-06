@@ -9,6 +9,9 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import (FigureCanvasTkAgg, NavigationToolbar2Tk)
 from matplotlib.patches import Rectangle, Circle
 from matplotlib.backend_bases import MouseEvent
+from matplotlib.path import Path
+from matplotlib.patches import PathPatch
+from skimage import measure
 import fishCore
 
 class bundle():
@@ -20,7 +23,7 @@ class progress():
     @staticmethod
     def save():
         f = simpledialog.askstring("Save", "Session Name: ")
-        if not f: f = "fish"
+        if not f: return
         f = f + ".pkl"
         with open(f, "wb") as file:
             pickle.dump(abstract.zip(), file)
@@ -37,6 +40,44 @@ class progress():
             abs = abstract(bund.path, gui.getTifSequence().gallery_frame, gui)
             abs.bbox = [box(each, gui) for each in bund.bbox]
         abstract.sendFirst()
+
+class segment():
+    def __init__(self, gui: FishGUI, data: np.ndarray):
+        # transpose to match matplotlib axis
+        self.__data: np.ndarray = data.T
+        self.gui = gui
+        self.__patch: PathPatch = None
+        self.__draw: bool = False
+        self.__exist: bool = True
+    
+    @property
+    def patch(self) -> PathPatch:
+        if not self.__patch:
+            c = measure.find_contours(self.__data, level=0.5)[0]
+            vertices = np.array(c)
+            codes = np.full(len(vertices), Path.LINETO)
+            codes[0] = Path.MOVETO
+            path = Path(vertices, codes)
+            self.__patch = PathPatch(path, facecolor='none', edgecolor='orange', linewidth=0.5)
+        return self.__patch
+    
+    @property
+    def draw(self) -> bool:
+        return self.__draw
+    @draw.setter
+    def draw(self, value: bool):
+        if self.__draw == value: return
+        if value:
+            self.gui.getStove().subplot.add_patch(self.patch)
+        else:
+            self.patch.remove()
+        self.gui.getStove().canvas.draw()
+        self.__draw = value
+    
+    @property
+    def exist(self) -> bool:
+        return self.__exist
+    
 
 class anchor():
     __buffer: anchor = None
@@ -344,8 +385,24 @@ class abstract():
         self.__highlighted: str = None
         self.__selected: bool = True
         self.__drawBbox: bool = False
+        self.__seg: list[segment] = []
+        self.__drawSeg: bool = False
         
         abstract.addToPool(self)
+        
+    @property
+    def segment(self) -> list[segment]:
+        if not len(self.__seg):
+            masks: np.ndarray = self.gui.getBackEnd().finetune.AppIntPREDICTwrapper(self.getImgNumpyGreyscale(), self.boundingBoxRevised)
+            for m in masks:
+                self.__seg.append(segment(self.gui, m))
+        return self.__seg
+    @segment.setter
+    def segment(self, value: list[segment]):
+        self.__seg = value
+    @segment.deleter
+    def segment(self):
+        self.__seg = []
     
     @property
     def thumbnail(self) -> str:
@@ -420,6 +477,15 @@ class abstract():
         self.__drawBbox = value
     
     @property
+    def drawSegmentation(self) -> bool:
+        return self.__drawSeg
+    @drawSegmentation.setter
+    def drawSegmentation(self, value: bool):
+        for s in self.segment:
+            s.draw = True if value else False
+        self.__drawSeg = value
+    
+    @property
     def highlighted(self) -> str:
         return self.__highlighted
     @highlighted.setter
@@ -443,6 +509,9 @@ class abstract():
             if buffer: buffer.selected = False
             if b: b.drawBbox = False
             self.drawBbox = True
+        elif self.gui.getFuncButton().segButtonPressed():
+            if b: b.drawSegmentation = False
+            self.drawSegmentation = True
         abstract.setBuffer(self)
         self.gui.getStove().cook(self)
     
@@ -485,7 +554,10 @@ class abstract():
             if abs.selected:
                 b = bundle()
                 b.path = abs.getAbsPath()
-                b.bbox = abs.boundingBoxRevised
+                if abs.noBbox():
+                    b.bbox = []
+                else:
+                    b.bbox = abs.boundingBoxRevised
                 result.append(b)
         return result
         
@@ -514,6 +586,8 @@ class abstract():
         return self.__label
     def getAbsPath(self) -> pathlib.Path:
         return self.__abs_path
+    def noBbox(self) -> bool:
+        return not len(self.__bbox)
 
 class tifSequence():
     def __init__(self, gui: FishGUI):
@@ -548,37 +622,43 @@ class funcButton():
     def __init__(self, gui: FishGUI):
         self.gui = gui
         container = gui.getLowerFrame().getFrameC()
+        self.toggle = {"SELECT": tkinter.IntVar(value=0),
+                       "BBOX": tkinter.IntVar(value=0),
+                       "SEGMENT": tkinter.IntVar(value=0)}
         self.IMPORT = tkinter.Button(container,
                                      text="Import",
                                      height=2,
                                      relief=tkinter.RAISED,
                                      command=self.IMPORT_call)
-        self.__select_toggle = tkinter.IntVar(value=0)
         self.SELECT = tkinter.Checkbutton(container,
                                           text="Select",
                                           height=2,
-                                          variable=self.__select_toggle,
+                                          variable=self.toggle["SELECT"],
                                           onvalue=1,
                                           offvalue=0,
                                           indicatoron=False,
                                           command=self.SELECT_call)
-        self.__bbox_toggle = tkinter.IntVar(value=0)
         self.BBOX = tkinter.Checkbutton(container,
                                         text="BBOX",
                                         height=2,
-                                        variable=self.__bbox_toggle,
+                                        variable=self.toggle["BBOX"],
                                         onvalue=1,
                                         offvalue=0,
                                         indicatoron=False,
                                         command=self.BBOX_call)
-        self.SEGMENT = tkinter.Button(container,
-                                      text="Segment",
-                                      height=2,
-                                      relief=tkinter.RAISED)
+        self.SEGMENT = tkinter.Checkbutton(container,
+                                           text="Segment",
+                                           height=2,
+                                           variable=self.toggle["SEGMENT"],
+                                           onvalue=1,
+                                           offvalue=0,
+                                           indicatoron=False,
+                                           command=self.SEGMENT_call)
         self.SAVE = tkinter.Button(container,
                                    text="Save",
                                    height=2,
-                                   relief=tkinter.RAISED)
+                                   relief=tkinter.RAISED,
+                                   state=tkinter.DISABLED)
     
     def pack(self):
         self.IMPORT.pack(side=tkinter.LEFT, expand=True, fill=tkinter.X)
@@ -602,9 +682,11 @@ class funcButton():
                 "SAVE": self.SAVE}[name]
     
     def selectButtonPressed(self) -> bool:
-        return self.__select_toggle.get()
+        return self.toggle["SELECT"].get()
     def bboxButtonPressed(self) -> bool:
-        return self.__bbox_toggle.get()
+        return self.toggle["BBOX"].get()
+    def segButtonPressed(self) -> bool:
+        return self.toggle["SEGMENT"].get()
     
     def IMPORT_call(self):
         folder_path = filedialog.askdirectory()
@@ -616,6 +698,8 @@ class funcButton():
     def BBOX_call(self):
         if not self.gui.getStove().isLoaded():
             FishGUI.popBox("w", "Image Not Loaded", "Please select an image first")
+            self.toggle["BBOX"].set(0)
+            return
         if self.bboxButtonPressed():
             abstract.sendFirst()
         elif not self.bboxButtonPressed():
@@ -631,6 +715,16 @@ class funcButton():
     def SEGMENT_call(self):
         if not self.gui.getStove().isLoaded():
             FishGUI.popBox("w", "Image Not Loaded", "Please select an image first")
+            self.toggle["SEGMENT"].set(0)
+            return
+        if self.bboxButtonPressed():
+            FishGUI.popBox("w", "BBOX Mode", "Please exit BBOX mode first")
+            self.toggle["SEGMENT"].set(0)
+            return
+        if self.segButtonPressed():
+            abstract.sendFirst()
+        if not self.segButtonPressed():
+            pass
 
 class lf():
     def __init__(self, gui: FishGUI):

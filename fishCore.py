@@ -221,7 +221,7 @@ class Fish():
         def __init__(self, fish):
             self.fish: Fish = fish
 
-        def predict(self, img: np.ndarray):
+        def predict(self, img: np.ndarray, bbox: list[list]=None):
             if not self.fish.model:
                 self.fish.logger.error("PRED: Model not loaded")
                 return
@@ -229,9 +229,12 @@ class Fish():
                 self.fish.logger.error("PRED: Image should be in grayscale")
                 return
             
-            raw = Fish.dino_bbox(self.fish.gdino_config, self.fish.gdino_weights, img)
-            self.fish.logger.info(f"CLU: found {len(raw['bright_points'])} bright points")
-            self.fish.logger.info(f"CLU: found {len(raw['bboxes'])} bounding boxes")
+            if not bbox:
+                raw = Fish.dino_bbox(self.fish.gdino_config, self.fish.gdino_weights, img)
+                self.fish.logger.info(f"CLU: found {len(raw['bright_points'])} bright points")
+                self.fish.logger.info(f"CLU: found {len(raw['bboxes'])} bounding boxes")
+            else:
+                raw = {"bright_points": "OF", "clusters": "OF", "bboxes": bbox}
             
             img = Fish.hdr_to_rgb(img, int(self.fish.config["predict"]["dynamic_range"]))
             
@@ -253,6 +256,8 @@ class Fish():
             masks = masks[0].squeeze(1).numpy().astype(np.uint8)
             # masks (n, 2048, 2048)
             
+            return raw, masks
+            
             self.fish.logger.debug(f"PRED: combination started")
             line_result = np.zeros(img.shape[:2], dtype=np.uint8)
             area_result = np.zeros(img.shape[:2], dtype=np.uint8)
@@ -272,6 +277,9 @@ class Fish():
             
             return raw, masks, line_result, area_result
             # line_result is the prediction with contour only, area_result is concrete prediction
+        
+        def AppIntPREDICTwrapper(self, img: np.ndarray, bbox: list[list]=None) -> np.ndarray:
+            return self.predict(img, bbox)[1]
         
         def info(self, img: np.ndarray, gt: list, gt_pos: list) -> None:
             raw, masks, line_result, area_result = self.predict(img)
