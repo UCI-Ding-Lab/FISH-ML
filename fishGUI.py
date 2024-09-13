@@ -120,13 +120,16 @@ class segment():
     def contains(self, x: float, y: float) -> bool:
         p = self.gui.getStove().subplot.transData.transform((x, y))
         return self.patch.contains_point(p)
-    def update_mask(self, x, y, radius):
+    def update_mask(self, x, y, radius, erase=False):
         x_int, y_int = int(x), int(y)
         for i in range(x_int - radius, x_int + radius + 1):
             for j in range(y_int - radius, y_int + radius + 1):
                 if (i - x_int)**2 + (j - y_int)**2 <= radius**2:
                     if 0 <= i < self.__data.shape[0] and 0 <= j < self.__data.shape[1]:
-                        self.__data[i, j] = 1
+                        if erase:
+                            self.__data[i, j] = 0  # Erase the mask (set to 0)
+                        else:
+                            self.__data[i, j] = 1  # Draw the mask (set to 1)
     
 
 class anchor():
@@ -306,10 +309,15 @@ class seasoning():
         self.tools_var = {"brush": tkinter.IntVar(value=0),
                           "eraser": tkinter.IntVar(value=0)}
         
-        self.tools = {"brush": tkinter.Checkbutton(self.seg_editor, image=self.tools_icon["brush"], variable=self.tools_var["brush"], onvalue=1,offvalue=0,indicatoron=False,),
-                      "eraser": tkinter.Checkbutton(self.seg_editor, image=self.tools_icon["eraser"], variable=self.tools_var["eraser"], onvalue=1,offvalue=0,indicatoron=False,)}
-        
-    
+        self.tools = {"brush": tkinter.Checkbutton(self.seg_editor
+                                                   ,image=self.tools_icon["brush"]
+                                                   ,variable=self.tools_var["brush"]
+                                                   ,onvalue=1,offvalue=0,indicatoron=False),
+                      "eraser": tkinter.Checkbutton(self.seg_editor
+                                                    ,image=self.tools_icon["eraser"]
+                                                    ,variable=self.tools_var["eraser"]
+                                                    ,onvalue=1,offvalue=0,indicatoron=False)}
+
     def pack(self):
         self.toolbank.pack(side=tkinter.RIGHT, fill=tkinter.BOTH)
         self.button1.pack(side=tkinter.TOP, fill=tkinter.X)
@@ -420,15 +428,28 @@ class stove():
                 for marker in self.markers:
                     marker.remove()
                 self.markers.clear()
-                self.tb_pointer.remove()
-                self.canvas.draw()
+                self.tb_pointer.set_visible(False)
+                self.canvas.draw_idle()
                 for x, y in final:
                     segment.getBuffer().update_mask(x, y, 15)
                 segment.getBuffer().recal_patch()
+                self.xs.clear()
+                self.ys.clear()
+
             elif self.gui.getSeasoning().eraserButtonPressed() and segment.getBuffer() and segment.getBuffer().selected:
-                pass
-            else:
-                pass
+                final = list(zip(self.xs, self.ys))
+                for marker in self.markers:
+                    marker.remove()
+                self.markers.clear()
+                if self.tb_pointer in self.subplot.patches:
+                    self.tb_pointer.remove()
+                self.canvas.draw_idle()
+                for x, y in final:
+                    segment.getBuffer().update_mask(x, y, 15, erase=True)
+                segment.getBuffer().recal_patch()
+                self.xs.clear()
+                self.ys.clear()
+
     def onCanvasDrag(self, event: MouseEvent):
         if self.gui.getFuncButton().bboxButtonPressed() and self.press:
             a = anchor.getBuffer()
@@ -467,18 +488,53 @@ class stove():
                 self.canvas.draw()
         elif self.gui.getFuncButton().segButtonPressed() and self.press:
             if self.gui.getSeasoning().burshButtonPressed() and segment.getBuffer() and segment.getBuffer().selected:
-                self.xs.append(event.xdata)
-                self.ys.append(event.ydata)
-                self.marker_draw(event.xdata, event.ydata)
-                self.tb_pointer.set_center((event.xdata, event.ydata))
+                current_x, current_y = event.xdata, event.ydata
+                if len(self.xs) > 0 and len(self.ys) > 0:
+                    last_x, last_y = self.xs[-1], self.ys[-1]
+                    distance = np.sqrt((current_x - last_x) ** 2 + (current_y - last_y) ** 2)
+                    if distance > 5: # distance threshold
+                        num_intermediate_points = int(distance // 1)
+                        x_values = np.linspace(last_x, current_x, num_intermediate_points + 1)
+                        y_values = np.linspace(last_y, current_y, num_intermediate_points + 1)
+                        for x, y in zip(x_values, y_values):
+                            self.xs.append(x)
+                            self.ys.append(y)
+                            self.marker_draw(x, y)
+                            self.tb_pointer.set_center((x, y))
+                else:
+                    self.xs.append(current_x)
+                    self.ys.append(current_y)
+                    self.marker_draw(current_x, current_y)
+                    self.tb_pointer.set_center((current_x, current_y))
                 self.canvas.draw()
+                segment.getBuffer().update_mask(current_x, current_y, 15)
+                segment.getBuffer().recal_patch()
+
             elif self.gui.getSeasoning().eraserButtonPressed() and segment.getBuffer() and segment.getBuffer().selected:
-                pass
-            else:
-                pass
-    
+                current_x, current_y = event.xdata, event.ydata
+                if len(self.xs) > 0 and len(self.ys) > 0:
+                    last_x, last_y = self.xs[-1], self.ys[-1]
+                    distance = np.sqrt((current_x - last_x) ** 2 + (current_y - last_y) ** 2)
+                    if distance > 5: # distance threshold
+                        num_intermediate_points = int(distance // 1)
+                        x_values = np.linspace(last_x, current_x, num_intermediate_points + 1)
+                        y_values = np.linspace(last_y, current_y, num_intermediate_points + 1)
+                        for x, y in zip(x_values, y_values):
+                            self.xs.append(x)
+                            self.ys.append(y)
+                            self.marker_draw(x, y)
+                            self.tb_pointer.set_center((x, y))
+                else:
+                    self.xs.append(current_x)
+                    self.ys.append(current_y)
+                    self.marker_draw(current_x, current_y)
+                    self.tb_pointer.set_center((current_x, current_y))
+                self.canvas.draw()
+                segment.getBuffer().update_mask(current_x, current_y, 15, erase=True)
+                segment.getBuffer().recal_patch()
+
     def marker_draw(self, x, y):
-        circle = Circle((x, y), 15, color='red', alpha=0.3)
+        circle = Circle((x, y), 15, color='red', alpha=0.01)
         self.markers.append(circle)
         self.subplot.add_patch(circle)
     
@@ -916,7 +972,10 @@ class FishGUI(object):
         self.__tifSequence.pack()
         self.__funcButton.pack()
         self.__seasoning.pack()
-    
+
+        self.__root.bind('<BackSpace>', self.onDelete)
+        self.__root.focus_set()
+
     @staticmethod    
     def popBox(type: str, title: str, message: str):
         if type == "e":
@@ -927,7 +986,48 @@ class FishGUI(object):
             messagebox.showinfo(title, message)
         else:
             raise AttributeError("Invalid type")
-    
+
+    # Delete operation (Backspace)
+    def onDelete(self, event):
+        selected_box = box.getBuffer()
+        selected_seg = segment.getBuffer()
+        abs = self.getStove().getLoaded()
+        
+        if selected_box:
+            if abs:
+                abs.bbox.remove(selected_box)
+                selected_box.draw = False
+                for anchor in selected_box.anchors.values():
+                    anchor.draw = False
+                box.clearBuffer()
+                self.getStove().canvas.draw_idle()
+            else:
+                self.popBox('w', 'No Image', 'No image is currently loaded.')
+        elif selected_seg:
+            if abs:
+                abs.segment.remove(selected_seg)
+                selected_seg.draw = False
+                segment.clearBuffer()
+                self.getStove().canvas.draw_idle()
+            else:
+                self.popBox('w', 'No Image', 'No image is currently loaded.')
+        else:
+            self.popBox('w', 'No Selection', 'No bounding box or segmentation mask is selected.')
+
+    def redraw_canvas(self, abs):
+        self.getStove().subplot.clear()
+        self.getStove().subplot.imshow(abs.getImgNumpyRGB())
+        
+        if self.getFuncButton().bboxButtonPressed():
+            for bbox in abs.bbox:
+                bbox.draw = True
+        
+        if self.getFuncButton().segButtonPressed():
+            for seg in abs.segment:
+                seg.draw = True
+        
+        self.getStove().canvas.draw_idle()
+
     def getLowerFrame(self) -> lf:
         return self.__lf
     def getStove(self) -> stove:
