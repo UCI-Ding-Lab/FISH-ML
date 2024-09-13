@@ -42,6 +42,7 @@ class progress():
         abstract.sendFirst()
 
 class segment():
+    __buffer: segment = None
     def __init__(self, gui: FishGUI, data: np.ndarray):
         # transpose to match matplotlib axis
         self.__data: np.ndarray = data.T
@@ -49,6 +50,7 @@ class segment():
         self.__patch: PathPatch = None
         self.__draw: bool = False
         self.__exist: bool = True
+        self.__selected: bool = False
     
     @property
     def patch(self) -> PathPatch:
@@ -60,6 +62,28 @@ class segment():
             path = Path(vertices, codes)
             self.__patch = PathPatch(path, facecolor='none', edgecolor='orange', linewidth=0.5)
         return self.__patch
+    
+    def recal_patch(self):
+        c = measure.find_contours(self.__data, level=0.5)[0]
+        vertices = np.array(c)
+        codes = np.full(len(vertices), Path.LINETO)
+        codes[0] = Path.MOVETO
+        path = Path(vertices, codes)
+        self.patch.set_path(path)
+        self.gui.getStove().canvas.draw()
+    
+    @property
+    def selected(self) -> bool:
+        return self.__selected
+    @selected.setter
+    def selected(self, value: bool):
+        self.__selected = value
+        self.draw = False
+        if value:
+            self.patch.set_edgecolor('b')
+        else:
+            self.patch.set_edgecolor('orange')
+        self.draw = True
     
     @property
     def draw(self) -> bool:
@@ -77,6 +101,32 @@ class segment():
     @property
     def exist(self) -> bool:
         return self.__exist
+    
+    @classmethod
+    def setBuffer(cls, segment: segment):
+        cls.__buffer = segment
+    @classmethod
+    def getBuffer(cls) -> segment:
+        return cls.__buffer
+    @classmethod
+    def clearBuffer(cls):
+        cls.__buffer = None
+    @classmethod
+    def clearBufferAndDeselect(cls):
+        current = cls.getBuffer()
+        if current: current.selected = False
+        cls.__buffer = None
+    
+    def contains(self, x: float, y: float) -> bool:
+        p = self.gui.getStove().subplot.transData.transform((x, y))
+        return self.patch.contains_point(p)
+    def update_mask(self, x, y, radius):
+        x_int, y_int = int(x), int(y)
+        for i in range(x_int - radius, x_int + radius + 1):
+            for j in range(y_int - radius, y_int + radius + 1):
+                if (i - x_int)**2 + (j - y_int)**2 <= radius**2:
+                    if 0 <= i < self.__data.shape[0] and 0 <= j < self.__data.shape[1]:
+                        self.__data[i, j] = 1
     
 
 class anchor():
@@ -242,16 +292,45 @@ class box():
 class seasoning():
     def __init__(self, gui: FishGUI):
         self.gui = gui
-        self.toolbank = tkinter.Frame(self.gui.getLowerFrame().getFrameA(), width=250, background="grey")
+        self.toolbank = tkinter.Frame(self.gui.getLowerFrame().getFrameA(), width=150, background="grey")
         self.button1 = tkinter.Button(self.toolbank, height=2, text="Save Progress", command=progress.save)
         self.button2 = tkinter.Button(self.toolbank, height=2, text="Load Progress", command=lambda: progress.load(gui))
+        self.sep = tkinter.Frame(self.toolbank, height=1, bd=0, relief=tkinter.SUNKEN, bg="black")
+        self.seg_editor = tkinter.LabelFrame(self.toolbank, text="Segmentation Editor")
+        
+        icon_path = pathlib.Path(self.gui.getBackEnd().config["gui"]["icon_folder"])
+        
+        self.tools_icon = {"brush": ImageTk.PhotoImage(Image.open(icon_path/"brush.png")),
+                           "eraser": ImageTk.PhotoImage(Image.open(icon_path/"eraser.png"))}
+        
+        self.tools_var = {"brush": tkinter.IntVar(value=0),
+                          "eraser": tkinter.IntVar(value=0)}
+        
+        self.tools = {"brush": tkinter.Checkbutton(self.seg_editor, image=self.tools_icon["brush"], variable=self.tools_var["brush"], onvalue=1,offvalue=0,indicatoron=False,),
+                      "eraser": tkinter.Checkbutton(self.seg_editor, image=self.tools_icon["eraser"], variable=self.tools_var["eraser"], onvalue=1,offvalue=0,indicatoron=False,)}
         
     
     def pack(self):
-        self.toolbank.pack(side=tkinter.RIGHT, expand=True, fill=tkinter.BOTH)
+        self.toolbank.pack(side=tkinter.RIGHT, fill=tkinter.BOTH)
         self.button1.pack(side=tkinter.TOP, fill=tkinter.X)
         self.button2.pack(side=tkinter.TOP, fill=tkinter.X)
-
+        self.sep.pack(fill=tkinter.X)
+        self.seg_editor.pack(side=tkinter.TOP, fill=tkinter.X)
+        self.tools["brush"].grid(row=0, column=0)
+        self.tools["eraser"].grid(row=0, column=1)
+    
+    def press_act(self, widget: str):
+        if not self.gui.getFuncButton().segButtonPressed():
+            FishGUI.popBox("w", "Segmentation Mode", "Please enter Segmentation mode first")
+            return
+        var = self.tools_var[widget]
+        var.set(1) if var.get() == 0 else var.set(0)
+    
+    def burshButtonPressed(self) -> bool:
+        return self.tools_var["brush"].get()
+    def eraserButtonPressed(self) -> bool:
+        return self.tools_var["eraser"].get()
+        
 class stove():
     def __init__(self, gui: FishGUI):
         self.gui = gui
@@ -269,6 +348,11 @@ class stove():
         self.canvas.mpl_connect("motion_notify_event", self.onCanvasDrag)
         self.toolbar = NavigationToolbar2Tk(self.canvas, self.pit)
         self.toolbar.update()
+        self.tb_pointer = Circle((0, 0), radius=15, linewidth=0.5, edgecolor='cyan', facecolor='none')
+        self.xs = []
+        self.ys = []
+        self.markers: list[Circle] = []
+        self.press = False
         
         self.__onLoad: abstract = None
 
@@ -277,7 +361,7 @@ class stove():
         self.sep.pack(side=tkinter.LEFT, fill=tkinter.Y)
         
         self.canvas.get_tk_widget().pack(side=tkinter.TOP, fill=tkinter.BOTH, expand=True)
-        self.toolbar.pack(side=tkinter.BOTTOM, fill=tkinter.BOTH, expand=True)
+        self.toolbar.pack(side=tkinter.BOTTOM, fill=tkinter.BOTH)
         
     def cook(self, abs: abstract):
         self.setLoaded(abs)
@@ -291,9 +375,11 @@ class stove():
         self.canvas.draw()
         
     def onCanvasClick(self, event: MouseEvent):
+        self.press = True
         if stove.isLeftClick(event):
+            if event.inaxes != self.subplot:
+                return
             if self.gui.getFuncButton().bboxButtonPressed():
-                
                 # check if click on anchor
                 if box.getBuffer() and box.getBuffer().selected:
                     anchorName = box.getBuffer().anchorContains(event.xdata, event.ydata)
@@ -302,18 +388,49 @@ class stove():
                         target.selected = True
                         anchor.setBuffer(target)
                         return
-
                 # check if click on box
                 target = self.getLoaded().findBoxFromPoint(event.xdata, event.ydata)
                 box.clearBufferAndDeselect()
                 if target:
                     target.selected = True
                     box.setBuffer(target)
+            elif self.gui.getFuncButton().segButtonPressed():
+                if self.gui.getSeasoning().burshButtonPressed() and segment.getBuffer() and segment.getBuffer().selected:
+                    self.xs = [event.xdata]
+                    self.ys = [event.ydata]
+                    self.marker_draw(event.xdata, event.ydata)
+                    self.tb_pointer.set_center((event.xdata, event.ydata))
+                    self.subplot.add_patch(self.tb_pointer)
+                    self.canvas.draw()
+                elif self.gui.getSeasoning().eraserButtonPressed() and segment.getBuffer() and segment.getBuffer().selected:
+                    pass
+                else:
+                    target = self.getLoaded().findSegFromPoint(event.xdata, event.ydata)
+                    segment.clearBufferAndDeselect()
+                    if target:
+                        target.selected = True
+                        segment.setBuffer(target)
     def onCanvasRelease(self, event: MouseEvent):
+        self.press = False
         if self.gui.getFuncButton().bboxButtonPressed():
             anchor.clearBuffer()
+        elif self.gui.getFuncButton().segButtonPressed():
+            if self.gui.getSeasoning().burshButtonPressed() and segment.getBuffer() and segment.getBuffer().selected:
+                final = list(zip(self.xs, self.ys))
+                for marker in self.markers:
+                    marker.remove()
+                self.markers.clear()
+                self.tb_pointer.remove()
+                self.canvas.draw()
+                for x, y in final:
+                    segment.getBuffer().update_mask(x, y, 15)
+                segment.getBuffer().recal_patch()
+            elif self.gui.getSeasoning().eraserButtonPressed() and segment.getBuffer() and segment.getBuffer().selected:
+                pass
+            else:
+                pass
     def onCanvasDrag(self, event: MouseEvent):
-        if self.gui.getFuncButton().bboxButtonPressed():
+        if self.gui.getFuncButton().bboxButtonPressed() and self.press:
             a = anchor.getBuffer()
             b = box.getBuffer()
             if a and a.selected and b and b.selected:
@@ -348,6 +465,22 @@ class stove():
                 b.rect.set_height(height)
                 b.anchorUpdate()
                 self.canvas.draw()
+        elif self.gui.getFuncButton().segButtonPressed() and self.press:
+            if self.gui.getSeasoning().burshButtonPressed() and segment.getBuffer() and segment.getBuffer().selected:
+                self.xs.append(event.xdata)
+                self.ys.append(event.ydata)
+                self.marker_draw(event.xdata, event.ydata)
+                self.tb_pointer.set_center((event.xdata, event.ydata))
+                self.canvas.draw()
+            elif self.gui.getSeasoning().eraserButtonPressed() and segment.getBuffer() and segment.getBuffer().selected:
+                pass
+            else:
+                pass
+    
+    def marker_draw(self, x, y):
+        circle = Circle((x, y), 15, color='red', alpha=0.3)
+        self.markers.append(circle)
+        self.subplot.add_patch(circle)
     
     def isLoaded(self) -> bool:
         return self.__onLoad is not None
@@ -399,7 +532,7 @@ class abstract():
         
     @property
     def segment(self) -> list[segment]:
-        if not len(self.__seg):
+        if not self.__seg:
             masks: np.ndarray = self.gui.getBackEnd().finetune.AppIntPREDICTwrapper(self.getImgNumpyGreyscale(), self.boundingBoxRevised)
             for m in masks:
                 self.__seg.append(segment(self.gui, m))
@@ -584,6 +717,11 @@ class abstract():
             if b.contains(x, y):
                 return b
         return None
+    def findSegFromPoint(self, x: float, y: float) -> segment:
+        for s in self.segment:
+            if s.contains(x, y):
+                return s
+        return None
     
     def getImgNumpyGreyscale(self) -> np.ndarray:
         return self.__img_np_gs
@@ -762,7 +900,7 @@ class FishGUI(object):
     def __init__(self, root):
         self.__root: tkinter.Tk = root
         self.__root.title("FISH UI Prototype")
-        self.__root.geometry("1000x800")
+        self.__root.geometry("870x1000")
         
         self.__be: fishCore.Fish = fishCore.Fish(pathlib.Path("./config.ini"))
         self.__be.set_model_version("3.50")
