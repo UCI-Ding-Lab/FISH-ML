@@ -47,7 +47,14 @@ Please place the `/assets` folder in the root of this repo:
 ```
 
 ### Install SAM and DINO
-Make sure you clone or download the repo for SAM and DINO to the following location:
+Make sure you clone or download the repo for SAM and DINO from
+> SAM: https://github.com/facebookresearch/segment-anything/tree/main/segment_anything
+
+> GroundingDINO: https://github.com/IDEA-Research/GroundingDINO
+
+> DINO ckpt: https://huggingface.co/ShilongLiu/GroundingDINO/blob/main/groundingdino_swint_ogc.pth
+
+and place them at the following location:
 ``` python
 /FISH-ML # current repo
 . 
@@ -75,13 +82,13 @@ Make sure you clone or download the repo for SAM and DINO to the following locat
 After you successfully install all envs needed, you can run FishUI by simply running `fishGUI.py`, here is an example of how to run it in your terminal:
 ```bash
 # don't forget to run the file under fish environment
-/Users/anaconda3/envs/FISH/bin/python /Users/FISH-ML/fishGUI.py   
+/Users/anaconda3/envs/FISH/bin/python ./fishGUI.py   
 ```
 After you run it, there should be a new UI window popped up, and you can begin your image segmentation!!! We are now using fish_v3.50.pth as our SAM model.
 
 ## Other notes
 Some of our SAM Finetuned Checkpoints (for testing only):
-`fish_v1.1.pth` - 1 ep, 50 images, 256 p_size, 0.5 overlap, 11250 patches, 0.89 loss
-`fish_v1.100.pth` - 100 EP, 50 images, 256 p_size, 0.5 overlap, 11250 patches, 0.4655 loss
-`fish_v2.1.pth` - 1 ep, 150 images, 256 p_size, 0.5 overlap, 33750 patches, 0.63 loss
-`fish_v3.50.pth` - 50 ep, 150 images, whole_image_input
+ - `fish_v1.1.pth` - 1 ep, 50 images, 256 p_size, 0.5 overlap, 11250 patches, 0.89 loss
+ - `fish_v1.100.pth` - 100 EP, 50 images, 256 p_size, 0.5 overlap, 11250 patches, 0.4655 loss
+ - `fish_v2.1.pth` - 1 ep, 150 images, 256 p_size, 0.5 overlap, 33750 patches, 0.63 loss
+ - `fish_v3.50.pth` - 50 ep, 150 images, whole_image_input
