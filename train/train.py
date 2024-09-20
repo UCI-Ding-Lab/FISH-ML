@@ -44,7 +44,6 @@ if __name__ == "__main__":
             param.requires_grad_(False)
     logging.info(f"Done")
 
-
     logging.info(f"Training in progress...")
     # Initialize TensorBoard SummaryWriter
     log_dir = f"runs/experiment_{int(time.time())}"
