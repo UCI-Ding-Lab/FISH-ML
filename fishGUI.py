@@ -2,6 +2,7 @@ from __future__ import annotations
 import tkinter
 import pathlib
 import pickle
+import os
 import numpy as np
 from PIL import (Image, ImageTk, ImageDraw)
 from tkinter import filedialog, messagebox, simpledialog
@@ -19,7 +20,7 @@ class bundle():
     def __init__(self) -> None:
         self.path: pathlib.Path = None
         self.bbox: list[list] = None
-        self.segment: list[np.ndarray] = None 
+        self.segment: list[np.ndarray] = None
 
 class progress():
     @staticmethod
@@ -53,7 +54,30 @@ class progress():
             messagebox.showinfo("Done", "Session loaded successfully!")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load session: {e}")
-
+    
+    @staticmethod
+    def export(gui: FishGUI):
+        selected_path = filedialog.askdirectory(title="Save Under...")
+        if selected_path:
+            folder_name = simpledialog.askstring("Dataset", "Enter the name of the Dataset folder:")
+            if folder_name:
+                new_folder_path = pathlib.Path(selected_path) / folder_name
+                try:
+                    os.makedirs(new_folder_path)
+                except FileExistsError:
+                    messagebox.showwarning("Warning", "Folder already exists!")
+                    return
+        toSave = [i for i in abstract.getPool() if i.selected and len(i.segmentExplict)]
+        d = {"name":[],"image":[],"xy":[],"masks":[]}
+        for abs in toSave:
+            d["name"].append(abs.getAbsPath())
+            d["image"].append(abs.getImgNumpyRGB())
+            d["xy"].append([seg.xy for seg in abs.segment])
+            d["masks"].append([seg.box for seg in abs.segment])
+        dataset = Dataset.from_dict(d)
+        dataset.save_to_disk(new_folder_path)
+        messagebox.showinfo("Done", "Dataset exported successfully!")
+                
 class segment():
     __buffer: segment = None
     def __init__(self, gui: FishGUI, data: np.ndarray):
@@ -64,6 +88,17 @@ class segment():
         self.__draw: bool = False
         self.__exist: bool = True
         self.__selected: bool = False
+    
+    @property
+    def xy(self):
+        ys, xs = np.where(self.__data.T == 1)
+        return xs.min(), ys.min()
+    
+    @property
+    def box(self):
+        ys, xs = np.where(self.__data.T == 1)
+        return self.__data.T[xs.min():xs.max(), ys.min():ys.max()]
+        
     
     @property
     def patch(self) -> PathPatch:
@@ -638,6 +673,10 @@ class abstract():
         self.__seg = []
     
     @property
+    def segmentExplict(self) -> list[segment]:
+        return self.__seg
+    
+    @property
     def thumbnail(self) -> str:
         return self.__thumbnail
     @thumbnail.setter
@@ -987,6 +1026,7 @@ class funcButton():
             FishGUI.popBox("w", "Segmentation Mode", "Please exit Segmentation mode first")
             self.toggle["EXPORT"].set(0)
             return
+        progress.export(self.gui)
 
 class lf():
     def __init__(self, gui: FishGUI):

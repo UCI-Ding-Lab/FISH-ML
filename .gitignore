@@ -167,6 +167,7 @@ cython_debug/
 *.tif
 *.m
 *.pkl
+*.arrow
 
 # lab folders
 /60min_tiff
