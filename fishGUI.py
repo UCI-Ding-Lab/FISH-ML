@@ -1,4 +1,5 @@
 from __future__ import annotations
+import time
 import tkinter
 import pathlib
 import pickle
@@ -15,6 +16,7 @@ from matplotlib.patches import PathPatch
 from skimage import measure
 from datasets import Dataset
 import fishCore
+import threading
 
 class bundle():
     def __init__(self) -> None:
@@ -376,19 +378,24 @@ class seasoning():
         icon_path = pathlib.Path(self.gui.getBackEnd().config["gui"]["icon_folder"])
         
         self.tools_icon = {"brush": ImageTk.PhotoImage(Image.open(icon_path/"brush.png")),
-                           "eraser": ImageTk.PhotoImage(Image.open(icon_path/"eraser.png"))}
+                           "eraser": ImageTk.PhotoImage(Image.open(icon_path/"eraser.png")),
+                           "add_bbox": ImageTk.PhotoImage(Image.open(icon_path/"bbox.png"))}
         
         self.tools_var = {"brush": tkinter.IntVar(value=0),
-                          "eraser": tkinter.IntVar(value=0)}
+                          "eraser": tkinter.IntVar(value=0),
+                          "add_bbox": tkinter.IntVar(value=0)}
         
         self.tools = {"brush": tkinter.Checkbutton(self.seg_editor
                                                    ,image=self.tools_icon["brush"]
                                                    ,variable=self.tools_var["brush"]
                                                    ,onvalue=1,offvalue=0,indicatoron=False),
-                      "eraser": tkinter.Checkbutton(self.seg_editor
+                    "eraser": tkinter.Checkbutton(self.seg_editor
                                                     ,image=self.tools_icon["eraser"]
                                                     ,variable=self.tools_var["eraser"]
-                                                    ,onvalue=1,offvalue=0,indicatoron=False)}
+                                                    ,onvalue=1,offvalue=0,indicatoron=False),
+                    "add_bbox": tkinter.Button(self.seg_editor
+                                               ,image=self.tools_icon["add_bbox"]
+                                               ,command=self.add_bbox_call)}
 
     def pack(self):
         self.toolbank.pack(side=tkinter.RIGHT, fill=tkinter.BOTH)
@@ -398,6 +405,7 @@ class seasoning():
         self.seg_editor.pack(side=tkinter.TOP, fill=tkinter.X)
         self.tools["brush"].grid(row=0, column=0)
         self.tools["eraser"].grid(row=0, column=1)
+        self.tools["add_bbox"].grid(row=1, column=0, columnspan=2)
     
     def press_act(self, widget: str):
         if not self.gui.getFuncButton().segButtonPressed():
@@ -410,6 +418,22 @@ class seasoning():
         return self.tools_var["brush"].get()
     def eraserButtonPressed(self) -> bool:
         return self.tools_var["eraser"].get()
+    
+    def add_bbox_call(self):
+        if not self.gui.getFuncButton().bboxButtonPressed():
+            FishGUI.popBox("w", "BBOX Mode", "Please enter BBOX mode first")
+            return
+        loaded_image = self.gui.getStove().getLoaded()
+        if not loaded_image:
+            FishGUI.popBox("w", "No Image", "No image is loaded")
+            return
+        width, height = loaded_image.getImgNumpyRGB().shape[1], loaded_image.getImgNumpyRGB().shape[0]
+        bbox = [width // 2 - 150, height // 2 - 150, width // 2 + 150, height // 2 + 150]
+        new_box = box(bbox, self.gui)
+        loaded_image.bbox.append(new_box)
+        new_box.selected = True
+        new_box.draw = True
+        self.gui.getStove().canvas.draw()
         
 class stove():
     def __init__(self, gui: FishGUI):
@@ -654,8 +678,8 @@ class abstract():
         self.__selected: bool = True
         self.__drawBbox: bool = False
         self.__seg: list[segment] = []
-        self.__drawSeg: bool = False
-        
+        self.__drawSeg: bool = False 
+
         abstract.addToPool(self)
         
     @property
@@ -798,6 +822,11 @@ class abstract():
                 target.on_click(None)
                 return
     @classmethod
+    def sendFocused(cls):
+        current = cls.getBuffer()
+        if current: current.on_click(None)
+        else: cls.sendFirst()
+    @classmethod
     def getPool(cls) -> list[abstract]:
         return cls.__pool
     @classmethod
@@ -822,7 +851,11 @@ class abstract():
     @classmethod
     def saveBboxChanges(cls):
         cls.getBuffer().drawBbox = False
-        cls.sendFirst()
+        cls.sendFocused()
+    @classmethod
+    def saveSegChanges(cls):
+        cls.getBuffer().drawSegmentation = False
+        cls.sendFocused()
     @classmethod
     def zip(cls) -> list[bundle]:
         result = []
@@ -894,7 +927,7 @@ class tifSequence():
     
     def addToGallery(self, tif_files: list[pathlib.Path]):
         for path in tif_files:
-            _ = abstract(path, self.gallery_frame, self.gui)
+            abs = abstract(path, self.gallery_frame, self.gui)
         abstract.sendFirst()
     
     def resetPosition(self):
@@ -981,7 +1014,7 @@ class funcButton():
             folder = pathlib.Path(folder_path)
             tif_files = [str(file.resolve()) for file in folder.glob("*.tif")]
             self.gui.getTifSequence().addToGallery(tif_files)
-            
+
     def SELECT_call(self):
         if self.selectButtonPressed():
             abstract.selectAll()
@@ -995,7 +1028,7 @@ class funcButton():
             self.toggle["BBOX"].set(0)
             return
         if self.bboxButtonPressed():
-            abstract.sendFirst()
+            abstract.sendFocused()
         elif not self.bboxButtonPressed():
             abstract.saveBboxChanges()
     
@@ -1009,9 +1042,9 @@ class funcButton():
             self.toggle["SEGMENT"].set(0)
             return
         if self.segButtonPressed():
-            abstract.sendFirst()
+            abstract.sendFocused()
         if not self.segButtonPressed():
-            pass
+            abstract.saveSegChanges()
     
     def EXPORT_call(self):
         if not self.gui.getStove().isLoaded():
@@ -1077,6 +1110,15 @@ class FishGUI(object):
         self.__root.bind('<BackSpace>', self.onDelete)
         self.__root.focus_set()
 
+    #     self.background_thread = threading.Thread(target=self.process_abs_pool, daemon=True)
+    #     self.background_thread.start()
+
+    # def process_abs_pool(self):
+    #     while True:
+    #         for abs in abstract.__pool:
+    #             if not abs.bbox:
+    #                 abs.bbox(self.__be.AppIntDINOwrapper(abs.getImgNumpyGreyscale()))
+    
     @staticmethod    
     def popBox(type: str, title: str, message: str):
         if type == "e":
