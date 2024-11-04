@@ -17,6 +17,8 @@ from skimage import measure
 from datasets import Dataset
 import fishCore
 import threading
+import concurrent.futures
+import logging
 
 class FishToolBar(NavigationToolbar2Tk):
     def __init__(self, canvas, window, gui: FishGUI):
@@ -107,6 +109,24 @@ class progress():
         dataset = Dataset.from_dict(d)
         dataset.save_to_disk(new_folder_path)
         messagebox.showinfo("Done", "Dataset exported successfully!")
+
+    @staticmethod
+    def generateBbox(gui: FishGUI, abstracts: list[abstract]):
+        """Generate bounding boxes in the background using threading and concurrency."""
+        logging.basicConfig(level=logging.INFO, format='%(message)s')
+        def generate_bboxes():
+            def generate_bbox(abs):
+                start_time = time.time()
+                _ = abs.bbox
+                abs.bbox_generated = True
+                if not gui.getFuncButton().selectButtonPressed():
+                    abs.thumbnail = "bbox"
+                end_time = time.time()
+                logging.info(f"Generated bbox for {abs.getAbsPath()} in {end_time - start_time:.4f} seconds")
+            max_workers = min(1, len(abstracts))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                executor.map(generate_bbox, abstracts)
+        threading.Thread(target=generate_bboxes, daemon=True).start() # Start the thread of generating bboxes
                 
 class segment():
     __buffer: segment = None
@@ -431,6 +451,15 @@ class seasoning():
                     "add_bbox": tkinter.Button(self.seg_editor
                                                ,image=self.tools_icon["add_bbox"]
                                                ,command=self.add_bbox_call)}
+        
+        self.marker_size_var = tkinter.IntVar(value=15)
+        self.marker_size_scale = tkinter.Scale(self.toolbank,
+                                                from_=10,
+                                                to=30,
+                                                orient=tkinter.HORIZONTAL,
+                                                label="Marker Size",
+                                                variable=self.marker_size_var
+                                            )
 
     def pack(self):
         self.toolbank.pack(side=tkinter.RIGHT, fill=tkinter.BOTH)
@@ -441,6 +470,7 @@ class seasoning():
         self.tools["brush"].grid(row=0, column=0)
         self.tools["eraser"].grid(row=0, column=1)
         self.tools["add_bbox"].grid(row=1, column=0, columnspan=2)
+        self.marker_size_scale.pack(side=tkinter.TOP, fill=tkinter.X)
     
     def press_act(self, widget: str):
         if not self.gui.getFuncButton().segButtonPressed():
@@ -451,7 +481,8 @@ class seasoning():
         for k, v in self.tools_var.items():
             if k != widget:
                 v.set(0)
-    
+    def get_marker_size(self) -> int:
+        return self.marker_size_var.get()
     def burshButtonPressed(self) -> bool:
         return self.tools_var["brush"].get()
     def eraserButtonPressed(self) -> bool:
@@ -493,13 +524,17 @@ class stove():
         self.canvas.mpl_connect("motion_notify_event", self.onCanvasDrag)
         self.toolbar = FishToolBar(self.canvas, self.pit, self.gui)
         self.toolbar.update()
-        self.tb_pointer = Circle((0, 0), radius=15, linewidth=0.5, edgecolor='cyan', facecolor='none')
+        self.tb_pointer = Circle((0, 0), 15, linewidth=0.5, edgecolor='cyan', facecolor='none')
         self.xs = []
         self.ys = []
         self.markers: list[Circle] = []
         self.press = False
         
         self.__onLoad: abstract = None
+    
+    def get_tb_pointer(self) -> Circle:
+        self.tb_pointer.set_radius(self.gui.getSeasoning().get_marker_size())
+        return self.tb_pointer
         
     @property
     def biltbg(self):
@@ -565,8 +600,8 @@ class stove():
                     self.xs = [event.xdata]
                     self.ys = [event.ydata]
                     self.marker_draw(event.xdata, event.ydata)
-                    self.tb_pointer.set_center((event.xdata, event.ydata))
-                    self.subplot.add_patch(self.tb_pointer)
+                    self.get_tb_pointer().set_center((event.xdata, event.ydata))
+                    self.subplot.add_patch(self.get_tb_pointer())
                     self.canvas.draw()
                 else:
                     target = self.getLoaded().findSegFromPoint(event.xdata, event.ydata)
@@ -586,7 +621,7 @@ class stove():
                     marker.remove()
                 self.markers.clear()
                 for x, y in final:
-                    segment.getBuffer().update_mask(x, y, 15)
+                    segment.getBuffer().update_mask(x, y, self.gui.getSeasoning().get_marker_size())
                 segment.getBuffer().recal_patch()
                 self.canvas.draw_idle()
                 
@@ -598,10 +633,10 @@ class stove():
                 for marker in self.markers:
                     marker.remove()
                 self.markers.clear()
-                self.tb_pointer.remove()
+                self.get_tb_pointer().remove()
                 self.canvas.draw_idle()
                 for x, y in final:
-                    segment.getBuffer().update_mask(x, y, 15, erase=True)
+                    segment.getBuffer().update_mask(x, y, self.gui.getSeasoning().get_marker_size(), erase=True)
                 segment.getBuffer().recal_patch()
                 self.xs.clear()
                 self.ys.clear()
@@ -669,7 +704,7 @@ class stove():
                     self.canvas.restore_region(self.BILT_BUFFER1)
                     self.marker_draw(x, y)
                     self.canvas.blit(self.subplot.bbox)
-                segment.getBuffer().update_mask(current_x, current_y, 15)
+                segment.getBuffer().update_mask(current_x, current_y, self.gui.getSeasoning().get_marker_size())
 
             elif self.gui.getSeasoning().eraserButtonPressed() and segment.getBuffer() and segment.getBuffer().selected:
                 current_x, current_y = event.xdata, event.ydata
@@ -684,17 +719,17 @@ class stove():
                             self.xs.append(x)
                             self.ys.append(y)
                             self.marker_draw(x, y)
-                            self.tb_pointer.set_center((x, y))
+                            self.get_tb_pointer().set_center((x, y))
                 else:
                     self.xs.append(current_x)
                     self.ys.append(current_y)
                     self.marker_draw(current_x, current_y)
-                    self.tb_pointer.set_center((current_x, current_y))
+                    self.get_tb_pointer().set_center((current_x, current_y))
                 self.canvas.draw()
-                segment.getBuffer().update_mask(current_x, current_y, 15, erase=True)
+                segment.getBuffer().update_mask(current_x, current_y, self.gui.getSeasoning().get_marker_size(), erase=True)
 
     def marker_draw(self, x, y):
-        circle = Circle((x, y), 15, color='red', alpha=0.01)
+        circle = Circle((x, y), self.gui.getSeasoning().get_marker_size(), color='red', alpha=0.01)
         self.markers.append(circle)
         self.subplot.add_patch(circle)
         self.subplot.draw_artist(circle)
@@ -743,7 +778,9 @@ class abstract():
         self.__selected: bool = True
         self.__drawBbox: bool = False
         self.__seg: list[segment] = []
-        self.__drawSeg: bool = False 
+        self.__drawSeg: bool = False
+
+        self.__bbox_generated: bool = False
 
         abstract.addToPool(self)
         
@@ -810,16 +847,22 @@ class abstract():
     
     @property
     def bbox(self) -> list[box]:
-        if not len(self.__bbox):
+        if not self.bbox_generated:
             raw = self.gui.getBackEnd().AppIntDINOwrapper(self.__img_np_gs) # list[list]
-            for each in raw:
-                o = box(each, self.gui)
-                self.__bbox.append(o)
+            self.__bbox = [box(each, self.gui) for each in raw]
+            self.bbox_generated = True
         return self.__bbox
     @bbox.setter
     def bbox(self, value: list[box]):
         self.__bbox = value
-    
+
+    @property
+    def bbox_generated(self) -> bool:
+        return self.__bbox_generated
+    @bbox_generated.setter
+    def bbox_generated(self, value: bool):
+        self.__bbox_generated = value
+
     @property
     def boundingBoxRevised(self) -> list[list]:
         return [b.final for b in self.bbox]
@@ -833,11 +876,16 @@ class abstract():
         return self.__drawBbox
     @drawBbox.setter
     def drawBbox(self, value: bool):
-        for b in self.bbox:
-            b.draw = value
-            if not value:
-                box.clearBufferAndDeselect()
-        self.thumbnail = "bbox" if value else "default"
+        if not self.bbox_generated:
+            FishGUI.popBox("w", "No BBOX", "No BBOX is available for this image")
+            self.__drawBbox = False
+            return
+        else:
+            for b in self.bbox:
+                b.draw = value
+                if not value:
+                    box.clearBufferAndDeselect()
+        # self.thumbnail = "bbox" if value else "default"
         self.gui.getStove().canvas.draw()
         self.__drawBbox = value
     
@@ -913,7 +961,7 @@ class abstract():
         for abs in cls.getPool():
             abs.thumbnail = "default"
             if not abs.selected: del abs.thumbnail
-        cls.sendFirst()
+        cls.sendFocused()
     @classmethod
     def saveBboxChanges(cls):
         cls.getBuffer().drawBbox = False
@@ -1080,6 +1128,8 @@ class funcButton():
             folder = pathlib.Path(folder_path)
             tif_files = [str(file.resolve()) for file in folder.glob("*.tif")]
             self.gui.getTifSequence().addToGallery(tif_files)
+        pool = abstract.getPool()
+        progress.generateBbox(self.gui, abstracts=pool)
 
     def SELECT_call(self):
         if self.selectButtonPressed():
@@ -1087,6 +1137,8 @@ class funcButton():
         elif not self.selectButtonPressed():
             abstract.removeUnselected()
             self.gui.getTifSequence().resetPosition()
+            for abs in abstract.getPool():
+                abs.thumbnail = "bbox" if abs.bbox_generated else "default"
     
     def BBOX_call(self):
         if not self.gui.getStove().isLoaded():
@@ -1094,7 +1146,13 @@ class funcButton():
             self.toggle["BBOX"].set(0)
             return
         if self.bboxButtonPressed():
-            abstract.sendFocused()
+            abs = abstract.getBuffer()
+            if abs:
+                if not abs.bbox_generated:
+                    FishGUI.popBox("w", "Bounding Boxes Not Ready", "Bounding boxes for this image have not been generated yet.")
+                    self.toggle["BBOX"].set(0)
+                    return
+                abstract.sendFocused()
         elif not self.bboxButtonPressed():
             abstract.saveBboxChanges()
     
@@ -1162,10 +1220,10 @@ class FishGUI(object):
         self.__be.set_model_version("3.50")
         
         self.__lf = lf(self)
-        self.__stove = stove(self)
         self.__tifSequence = tifSequence(self)
         self.__funcButton = funcButton(self)
         self.__seasoning = seasoning(self)
+        self.__stove = stove(self)
         
         self.__lf.pack()
         self.__stove.pack()
@@ -1175,15 +1233,6 @@ class FishGUI(object):
 
         self.__root.bind('<BackSpace>', self.onDelete)
         self.__root.focus_set()
-
-    #     self.background_thread = threading.Thread(target=self.process_abs_pool, daemon=True)
-    #     self.background_thread.start()
-
-    # def process_abs_pool(self):
-    #     while True:
-    #         for abs in abstract.__pool:
-    #             if not abs.bbox:
-    #                 abs.bbox(self.__be.AppIntDINOwrapper(abs.getImgNumpyGreyscale()))
     
     @staticmethod    
     def popBox(type: str, title: str, message: str):
@@ -1224,6 +1273,7 @@ class FishGUI(object):
         return self.__root
         
 if __name__ == "__main__":
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
     root = tkinter.Tk()
     app = FishGUI(root)
     root.mainloop()
