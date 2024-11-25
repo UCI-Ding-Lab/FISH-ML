@@ -82,6 +82,7 @@ class progress():
                 abs = abstract(bund.path, gui.getTifSequence().gallery_frame, gui)
                 abs.bbox = [box(each, gui) for each in bund.bbox]
                 abs.segment = [segment(gui, seg) for seg in bund.segment]
+                abs.bbox_generated = True if abs.bbox else False
             abstract.sendFirst()
             messagebox.showinfo("Done", "Session loaded successfully!")
         except Exception as e:
