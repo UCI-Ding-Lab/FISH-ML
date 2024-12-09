@@ -1031,6 +1031,26 @@ class tifSequence():
 
         self.gallery_frame = tkinter.Frame(self.base)
         self.base.create_window((0, 0), window=self.gallery_frame, anchor="nw")
+
+        self.base.bind("<Configure>", lambda e: self.update_scrollregion())
+        self.base.bind_all("<MouseWheel>", self.on_mouse_wheel)
+        self.base.bind_all("<Button-4>", self.on_mouse_wheel)
+        self.base.bind_all("<Button-5>", self.on_mouse_wheel)
+
+    def update_scrollregion(self):
+        self.base.update_idletasks()
+        self.base.config(scrollregion=self.base.bbox("all"))
+
+    def on_mouse_wheel(self, event):
+        if event.num == 4:  # Linux scrolling up
+            self.base.xview_scroll(-1, "units")
+        elif event.num == 5:  # Linux scrolling down
+            self.base.xview_scroll(1, "units")
+        elif event.delta:  # Windows/macOS
+            if event.delta > 0:
+                self.base.xview_scroll(-1, "units")
+            else:
+                self.base.xview_scroll(1, "units")
         
     def pack(self):
         self.base.pack(side=tkinter.TOP, fill=tkinter.BOTH, expand=True)

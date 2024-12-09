@@ -16,12 +16,13 @@ from torchvision.ops import box_convert
 from transformers import SamModel, SamConfig, SamProcessor, pipeline
 from scipy.ndimage import binary_erosion
 from PIL import Image
+from icecream import ic
 
 # Local Application/Library Specific Imports
 import groundingdino.datasets.transforms as T
 import groundingdino.util.inference as dino
 import groundingdino
-from segment_anything import SamPredictor, sam_model_registry
+from segment_anything import SamPredictor
 
 class ColoredFormatter(logging.Formatter):
     COLORS = {
@@ -172,6 +173,7 @@ class Fish():
             return bboxes
         
         model = dino.load_model(config, weights)
+        # ic(model)
         image_source, image = load_image(img)
 
         TEXT_PROMPT = "white flower"
