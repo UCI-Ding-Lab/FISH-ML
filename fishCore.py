@@ -16,7 +16,6 @@ from torchvision.ops import box_convert
 from transformers import SamModel, SamConfig, SamProcessor, pipeline
 from scipy.ndimage import binary_erosion
 from PIL import Image
-from icecream import ic
 
 # Local Application/Library Specific Imports
 import groundingdino.datasets.transforms as T
