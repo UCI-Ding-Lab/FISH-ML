@@ -1,6 +1,6 @@
 # FISH-ML for Cell Image Segmentation
 
-This repo is a unified framework for Cell Image Segmentation of image using **Segment Anything Model** and **Grounding DINO** which utilizes **Transformers** and **PyTorch** as Backbone.
+This repo is a unified framework for Cell Image Segmentation of image using **Segment Anything Model** and **Grounding DINO** which utilizes **Transformers** and **PyTorch** as Backbone. For usage and relevant information, vist WIKI [here](https://github.com/UCI-Ding-Lab/FISH-ML/wiki).
 
 ## Our models
 Some of our SAM Finetuned Checkpoints (for testing only):
