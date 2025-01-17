@@ -19,6 +19,7 @@ import fishCore
 import threading
 import concurrent.futures
 import logging
+import cv2
 
 class FishToolBar(NavigationToolbar2Tk):
     def __init__(self, canvas, window, gui: FishGUI):
@@ -36,6 +37,12 @@ class FishToolBar(NavigationToolbar2Tk):
     def zoom(self, *args):
         self.resetToolBank()
         super().zoom(*args)
+    
+    def deactivate_all_tools(self):
+        if self.mode:
+            self.mode = ""
+            self.set_message("")
+            self._update_buttons_checked()
 
 # debug
 def timer(func):
@@ -112,14 +119,12 @@ class progress():
     @staticmethod
     def generateBbox(gui: FishGUI, abstracts: list[abstract]):
         """Generate bounding boxes in the background using threading and concurrency."""
-        logging.basicConfig(level=logging.INFO, format='%(message)s')
         def generate_bboxes():
-            def generate_bbox(abs):
+            def generate_bbox(abs: abstract):
                 start_time = time.time()
                 _ = abs.bbox
-                abs.bbox_generated = True
                 end_time = time.time()
-                logging.info(f"Generated bbox for {abs.getAbsPath()} in {end_time - start_time:.4f} seconds")
+                print(f"Generated bbox for {abs.getAbsPath()} in {end_time - start_time:.4f} seconds")
             max_workers = min(1, len(abstracts))
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                 executor.map(generate_bbox, abstracts)
@@ -592,6 +597,7 @@ class stove():
                 target = self.getLoaded().findBoxFromPoint(event.xdata, event.ydata)
                 box.clearBufferAndDeselect()
                 if target:
+                    self.toolbar.deactivate_all_tools()
                     target.selected = True
                     box.setBuffer(target)
             elif self.gui.getFuncButton().segButtonPressed():
@@ -1035,14 +1041,10 @@ class abstract():
         
     @staticmethod
     def grayscale_to_rgb(grayscale_img) -> np.ndarray:
-        rgb_img = np.zeros((2048, 2048, 3), dtype=np.uint8)
-        img_uint8 = np.clip(grayscale_img//256, 0, 255).astype(np.uint8)
-        rgb_img[:, :, 0] = img_uint8
-        rgb_img[:, :, 1] = img_uint8
-        rgb_img[:, :, 2] = img_uint8
-        dynamic_exp_factor = 255.0 / np.max(rgb_img[:, :, 0])
-        brightened_image = np.clip(rgb_img * dynamic_exp_factor, 0, 255).astype(np.uint8)
-        return brightened_image
+        img_normalized = cv2.normalize(grayscale_img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+        img_rgb = cv2.cvtColor(img_normalized, cv2.COLOR_GRAY2RGB)
+        brightness_factor = 1
+        return np.clip(img_rgb * brightness_factor, 0, 255).astype(np.uint8)
     
     def findBoxFromPoint(self, x: float, y: float) -> box:
         for b in self.bbox:
@@ -1155,7 +1157,7 @@ class funcButton():
                                            indicatoron=False,
                                            command=self.SEGMENT_call)
         self.EXPORT = tkinter.Checkbutton(container,
-                                    text="Export",
+                                    text="Export(MATLAB)",
                                     height=2,
                                     variable=self.toggle["EXPORT"],
                                     onvalue=1,

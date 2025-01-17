@@ -16,6 +16,7 @@ from torchvision.ops import box_convert
 from transformers import SamModel, SamConfig, SamProcessor, pipeline
 from scipy.ndimage import binary_erosion
 from PIL import Image
+import cv2
 
 # Local Application/Library Specific Imports
 import groundingdino.datasets.transforms as T
@@ -109,14 +110,10 @@ class Fish():
     def dino_bbox(config: str, weights: str, img: np.ndarray) -> dict:
         def load_image(img: np.ndarray) -> Tuple[np.array, torch.Tensor]:
             def grayscale_to_rgb(grayscale_img) -> np.ndarray:
-                rgb_img = np.zeros((2048, 2048, 3), dtype=np.uint8)
-                img_uint8 = np.clip(grayscale_img//256, 0, 255).astype(np.uint8)
-                rgb_img[:, :, 0] = img_uint8
-                rgb_img[:, :, 1] = img_uint8
-                rgb_img[:, :, 2] = img_uint8
-                dynamic_exp_factor = 255.0 / np.max(rgb_img[:, :, 0])
-                brightened_image = np.clip(rgb_img * dynamic_exp_factor, 0, 255).astype(np.uint8)
-                return brightened_image
+                img_normalized = cv2.normalize(grayscale_img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+                img_rgb = cv2.cvtColor(img_normalized, cv2.COLOR_GRAY2RGB)
+                brightness_factor = 1
+                return np.clip(img_rgb * brightness_factor, 0, 255).astype(np.uint8)
             
             transform = T.Compose([T.RandomResize([800], max_size=1333),
                                    T.ToTensor(),
@@ -166,6 +163,8 @@ class Fish():
                 min_x, min_y, max_x, max_y = box
                 area = (max_x - min_x) * (max_y - min_y)
                 if area < 200 or area > 160000:
+                    continue
+                if max_x - min_x < 20 or max_y - min_y < 20:
                     continue
                 bboxes.append(box)
             bboxes = filter_rects(np.array(bboxes)).tolist()
