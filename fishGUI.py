@@ -19,6 +19,7 @@ import fishCore
 import threading
 import concurrent.futures
 import logging
+import cv2
 
 class FishToolBar(NavigationToolbar2Tk):
     def __init__(self, canvas, window, gui: FishGUI):
@@ -36,6 +37,12 @@ class FishToolBar(NavigationToolbar2Tk):
     def zoom(self, *args):
         self.resetToolBank()
         super().zoom(*args)
+    
+    def deactivate_all_tools(self):
+        if self.mode:
+            self.mode = ""
+            self.set_message("")
+            self._update_buttons_checked()
 
 # debug
 def timer(func):
@@ -82,9 +89,7 @@ class progress():
                 abs = abstract(bund.path, gui.getTifSequence().gallery_frame, gui)
                 abs.bbox = [box(each, gui) for each in bund.bbox]
                 abs.segment = [segment(gui, seg) for seg in bund.segment]
-                abs.bbox_generated = True if abs.bbox else False
             abstract.sendFirst()
-            messagebox.showinfo("Done", "Session loaded successfully!")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load session: {e}")
     
@@ -114,16 +119,12 @@ class progress():
     @staticmethod
     def generateBbox(gui: FishGUI, abstracts: list[abstract]):
         """Generate bounding boxes in the background using threading and concurrency."""
-        logging.basicConfig(level=logging.INFO, format='%(message)s')
         def generate_bboxes():
-            def generate_bbox(abs):
+            def generate_bbox(abs: abstract):
                 start_time = time.time()
                 _ = abs.bbox
-                abs.bbox_generated = True
-                if not gui.getFuncButton().selectButtonPressed():
-                    abs.thumbnail = "bbox"
                 end_time = time.time()
-                logging.info(f"Generated bbox for {abs.getAbsPath()} in {end_time - start_time:.4f} seconds")
+                print(f"Generated bbox for {abs.getAbsPath()} in {end_time - start_time:.4f} seconds")
             max_workers = min(1, len(abstracts))
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                 executor.map(generate_bbox, abstracts)
@@ -424,8 +425,8 @@ class seasoning():
     def __init__(self, gui: FishGUI):
         self.gui = gui
         self.toolbank = tkinter.Frame(self.gui.getLowerFrame().getFrameA(), width=150, background="grey")
-        self.button1 = tkinter.Button(self.toolbank, height=2, text="Save Progress", command=progress.save)
-        self.button2 = tkinter.Button(self.toolbank, height=2, text="Load Progress", command=lambda: progress.load(gui))
+        self.button1 = tkinter.Button(self.toolbank, height=2, text="Save Progress", command=self.SAVEPROG_CALL)
+        self.button2 = tkinter.Button(self.toolbank, height=2, text="Load Progress", command=self.LOADPROG_CALL)
         self.sep = tkinter.Frame(self.toolbank, height=1, bd=0, relief=tkinter.SUNKEN, bg="black")
         self.seg_editor = tkinter.LabelFrame(self.toolbank, text="Segmentation Editor")
         
@@ -451,7 +452,7 @@ class seasoning():
                                                     ,command=lambda: self.press_act("eraser")),
                     "add_bbox": tkinter.Button(self.seg_editor
                                                ,image=self.tools_icon["add_bbox"]
-                                               ,command=self.add_bbox_call)}
+                                               ,command=self.ADDBBOX_CALL)}
         
         self.marker_size_var = tkinter.IntVar(value=15)
         self.marker_size_scale = tkinter.Scale(self.toolbank,
@@ -489,7 +490,7 @@ class seasoning():
     def eraserButtonPressed(self) -> bool:
         return self.tools_var["eraser"].get()
     
-    def add_bbox_call(self):
+    def ADDBBOX_CALL(self):
         if not self.gui.getFuncButton().bboxButtonPressed():
             FishGUI.popBox("w", "BBOX Mode", "Please enter BBOX mode first")
             return
@@ -504,6 +505,18 @@ class seasoning():
         new_box.selected = True
         new_box.draw = True
         self.gui.getStove().canvas.draw()
+    def SAVEPROG_CALL(self):
+        self.gui.indicateWait("Pkl save")
+        def job():
+            progress.save()
+            self.gui.getRoot().after(0, self.gui.dismissWait)
+        threading.Thread(target=job, daemon=True).start()
+    def LOADPROG_CALL(self):
+        self.gui.indicateWait("Pkl load")
+        def job():
+            progress.load(self.gui)
+            self.gui.getRoot().after(0, self.gui.dismissWait)
+        threading.Thread(target=job, daemon=True).start()
         
 class stove():
     BILT_BUFFER1 = None
@@ -584,6 +597,7 @@ class stove():
                 target = self.getLoaded().findBoxFromPoint(event.xdata, event.ydata)
                 box.clearBufferAndDeselect()
                 if target:
+                    self.toolbar.deactivate_all_tools()
                     target.selected = True
                     box.setBuffer(target)
             elif self.gui.getFuncButton().segButtonPressed():
@@ -773,6 +787,11 @@ class abstract():
         self.__img_pil_thumbnail_bbox = None
         self.__img_pil_thumbnail_select = None
         self.__img_pil_thumbnail_crossout = None
+        self.__img_pil_thumbnail_segmented = None
+        self.__img_tk_thumbnail_bbox = None
+        self.__img_tk_thumbnail_select = None
+        self.__img_tk_thumbnail_crossout = None
+        self.__img_tk_thumbnail_segmented = None
         self.__thumbnail: str = None
         self.__bbox: list[box] = []
         self.__highlighted: str = None
@@ -782,19 +801,31 @@ class abstract():
         self.__drawSeg: bool = False
 
         self.__bbox_generated: bool = False
+        self.__segment_generated: bool = False
 
         abstract.addToPool(self)
         
     @property
     def segment(self) -> list[segment]:
-        if not self.__seg:
+        def job():
             masks: np.ndarray = self.gui.getBackEnd().finetune.AppIntPREDICTwrapper(self.getImgNumpyGreyscale(), self.boundingBoxRevised)
             for m in masks:
                 self.__seg.append(segment(self.gui, m))
+            self.segment_generated = True
+            self.gui.getRoot().after(0, self.gui.dismissWait)
+            
+        if not self.segment_generated:
+            self.gui.indicateWait("Segmentation")
+            self.gui.getRoot().update_idletasks()
+            t = threading.Thread(target=job, daemon=True)
+            t.start()
+            while not self.segment_generated: time.sleep(0.1)
+        
         return self.__seg
     @segment.setter
     def segment(self, value: list[segment]):
         self.__seg = value
+        self.segment_generated = True if value else False
     @segment.deleter
     def segment(self):
         self.__seg = []
@@ -812,24 +843,30 @@ class abstract():
         if value == "default":
             self.getLabel().config(image=self.__img_tk_thumbnail)
         elif value == "bbox":
-            if not self.__img_pil_thumbnail_bbox:
+            if not self.__img_tk_thumbnail_bbox:
                 self.__img_pil_thumbnail_bbox = self.__img_pil_thumbnail.copy()
                 ImageDraw.Draw(self.__img_pil_thumbnail_bbox).ellipse((49, 5, 59, 15), fill=(0,0,255))
-                self.__img_pil_thumbnail_bbox = ImageTk.PhotoImage(self.__img_pil_thumbnail_bbox)
-            self.getLabel().config(image=self.__img_pil_thumbnail_bbox)
+                self.__img_tk_thumbnail_bbox = ImageTk.PhotoImage(self.__img_pil_thumbnail_bbox)
+            self.getLabel().config(image=self.__img_tk_thumbnail_bbox)
         elif value == "selected":
-            if not self.__img_pil_thumbnail_select:
+            if not self.__img_tk_thumbnail_select:
                 self.__img_pil_thumbnail_select = self.__img_pil_thumbnail.copy()
                 ImageDraw.Draw(self.__img_pil_thumbnail_select).ellipse((5, 5, 15, 15), fill=(0,255,0))
-                self.__img_pil_thumbnail_select = ImageTk.PhotoImage(self.__img_pil_thumbnail_select)
-            self.getLabel().config(image=self.__img_pil_thumbnail_select)
+                self.__img_tk_thumbnail_select = ImageTk.PhotoImage(self.__img_pil_thumbnail_select)
+            self.getLabel().config(image=self.__img_tk_thumbnail_select)
         elif value == "crossout":
-            if not self.__img_pil_thumbnail_crossout:
+            if not self.__img_tk_thumbnail_crossout:
                 self.__img_pil_thumbnail_crossout = self.__img_pil_thumbnail.copy()
                 ImageDraw.Draw(self.__img_pil_thumbnail_crossout).line((5, 5, 15, 15), fill=(255,0,0), width=2)
                 ImageDraw.Draw(self.__img_pil_thumbnail_crossout).line((5, 15, 15, 5), fill=(255,0,0), width=2)
-                self.__img_pil_thumbnail_crossout = ImageTk.PhotoImage(self.__img_pil_thumbnail_crossout)
-            self.getLabel().config(image=self.__img_pil_thumbnail_crossout)
+                self.__img_tk_thumbnail_crossout = ImageTk.PhotoImage(self.__img_pil_thumbnail_crossout)
+            self.getLabel().config(image=self.__img_tk_thumbnail_crossout)
+        elif value == "segmented":
+            if not self.__img_tk_thumbnail_segmented:
+                self.__img_pil_thumbnail_segmented = self.__img_pil_thumbnail_bbox.copy()
+                ImageDraw.Draw(self.__img_pil_thumbnail_segmented).ellipse((49, 20, 59, 30), fill=(255, 165, 0))
+                self.__img_tk_thumbnail_segmented = ImageTk.PhotoImage(self.__img_pil_thumbnail_segmented)
+            self.getLabel().config(image=self.__img_tk_thumbnail_segmented)
     @thumbnail.deleter
     def thumbnail(self):
         self.getLabel().pack_forget()
@@ -856,6 +893,7 @@ class abstract():
     @bbox.setter
     def bbox(self, value: list[box]):
         self.__bbox = value
+        self.bbox_generated = True if value else False
 
     @property
     def bbox_generated(self) -> bool:
@@ -863,6 +901,17 @@ class abstract():
     @bbox_generated.setter
     def bbox_generated(self, value: bool):
         self.__bbox_generated = value
+        if not self.gui.getFuncButton().selectButtonPressed():
+            self.thumbnail = "bbox" if value else "default"
+    
+    @property
+    def segment_generated(self) -> bool:
+        return self.__segment_generated
+    @segment_generated.setter
+    def segment_generated(self, value: bool):
+        self.__segment_generated = value
+        if not self.gui.getFuncButton().selectButtonPressed():
+            self.thumbnail = "segmented" if value else "bbox"
 
     @property
     def boundingBoxRevised(self) -> list[list]:
@@ -895,7 +944,8 @@ class abstract():
         return self.__drawSeg
     @drawSegmentation.setter
     def drawSegmentation(self, value: bool):
-        for s in self.segment:
+        segments = self.segment
+        for s in segments:
             s.draw = True if value else False
         self.__drawSeg = value
     
@@ -980,23 +1030,21 @@ class abstract():
                 b.path = abs.getAbsPath()
                 if abs.noBbox():
                     b.bbox = []
-                    b.segment = []
                 else:
                     b.bbox = abs.boundingBoxRevised
+                if abs.noSegment():
+                    b.segment = []
+                else:
                     b.segment = abs.segmentationRevised
                 result.append(b)
         return result
         
     @staticmethod
     def grayscale_to_rgb(grayscale_img) -> np.ndarray:
-        rgb_img = np.zeros((2048, 2048, 3), dtype=np.uint8)
-        img_uint8 = np.clip(grayscale_img//256, 0, 255).astype(np.uint8)
-        rgb_img[:, :, 0] = img_uint8
-        rgb_img[:, :, 1] = img_uint8
-        rgb_img[:, :, 2] = img_uint8
-        dynamic_exp_factor = 255.0 / np.max(rgb_img[:, :, 0])
-        brightened_image = np.clip(rgb_img * dynamic_exp_factor, 0, 255).astype(np.uint8)
-        return brightened_image
+        img_normalized = cv2.normalize(grayscale_img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+        img_rgb = cv2.cvtColor(img_normalized, cv2.COLOR_GRAY2RGB)
+        brightness_factor = 1
+        return np.clip(img_rgb * brightness_factor, 0, 255).astype(np.uint8)
     
     def findBoxFromPoint(self, x: float, y: float) -> box:
         for b in self.bbox:
@@ -1019,6 +1067,8 @@ class abstract():
         return self.__abs_path
     def noBbox(self) -> bool:
         return not len(self.__bbox)
+    def noSegment(self) -> bool:
+        return not len(self.__seg)
 
 class tifSequence():
     def __init__(self, gui: FishGUI):
@@ -1107,7 +1157,7 @@ class funcButton():
                                            indicatoron=False,
                                            command=self.SEGMENT_call)
         self.EXPORT = tkinter.Checkbutton(container,
-                                    text="Export",
+                                    text="Export(MATLAB)",
                                     height=2,
                                     variable=self.toggle["EXPORT"],
                                     onvalue=1,
@@ -1204,7 +1254,11 @@ class funcButton():
             FishGUI.popBox("w", "Segmentation Mode", "Please exit Segmentation mode first")
             self.toggle["EXPORT"].set(0)
             return
-        progress.export(self.gui)
+        self.gui.indicateWait("Dataset conversion")
+        def job():
+            progress.export(self.gui)
+            self.gui.getRoot().after(0, self.gui.dismissWait)
+        threading.Thread(target=job, daemon=True).start()
 
 class lf():
     def __init__(self, gui: FishGUI):
@@ -1251,6 +1305,8 @@ class FishGUI(object):
         self.__tifSequence.pack()
         self.__funcButton.pack()
         self.__seasoning.pack()
+        
+        self.__waitWindow = None
 
         self.__root.bind('<BackSpace>', self.onDelete)
         self.__root.focus_set()
@@ -1265,6 +1321,17 @@ class FishGUI(object):
             messagebox.showinfo(title, message)
         else:
             raise AttributeError("Invalid type")
+    
+    def indicateWait(self, content: str):
+        self.__waitWindow = tkinter.Toplevel(self.__root)
+        self.__waitWindow.title("FISH-ML")
+        self.__waitWindow.geometry("300x100")
+        self.__waitWindow.resizable(False, False)
+        tkinter.Label(self.__waitWindow, text=content+" in progress...").pack()
+    def dismissWait(self):
+        if self.__waitWindow:
+            self.__waitWindow.destroy()
+            self.__waitWindow = None
 
     # Delete operation (Backspace)
     def onDelete(self, event):
