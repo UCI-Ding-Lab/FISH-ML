@@ -462,6 +462,29 @@ class seasoning():
                                                 label="Marker Size",
                                                 variable=self.marker_size_var
                                             )
+        self.sep2 = tkinter.Frame(self.toolbank, height=1, bd=0, relief=tkinter.SUNKEN, bg="black")
+        self.contrast_var = tkinter.IntVar(value=250)
+        self.contrast_bar = tkinter.Scale(self.toolbank,
+                                          from_=0,
+                                          to=500,
+                                          orient=tkinter.HORIZONTAL,
+                                          label="Contrast",
+                                          variable=self.contrast_var
+                                          )
+        self.contrast_bar.bind("<ButtonRelease-1>", self.on_contrast_bar_change)
+        self.contrast_reset = tkinter.Button(self.toolbank, text="Reset", command=lambda: self.on_contrast_bar_change(None))
+        self.sep3 = tkinter.Frame(self.toolbank, height=1, bd=0, relief=tkinter.SUNKEN, bg="black")
+        self.brightness_var = tkinter.IntVar(value=250)
+        self.brightness_bar = tkinter.Scale(self.toolbank,
+                                             from_=0,
+                                             to=500,
+                                             orient=tkinter.HORIZONTAL,
+                                             label="Brightness",
+                                             variable=self.brightness_var
+                                            )
+        self.brightness_bar.bind("<ButtonRelease-1>", self.on_brightness_bar_change)
+        self.brightness_reset = tkinter.Button(self.toolbank, text="Reset", command=lambda: self.on_brightness_bar_change(None))
+        
 
     def pack(self):
         self.toolbank.pack(side=tkinter.RIGHT, fill=tkinter.BOTH)
@@ -473,6 +496,26 @@ class seasoning():
         self.tools["eraser"].grid(row=0, column=1)
         self.tools["add_bbox"].grid(row=1, column=0, columnspan=2)
         self.marker_size_scale.pack(side=tkinter.TOP, fill=tkinter.X)
+        self.sep2.pack(fill=tkinter.X)
+        self.contrast_bar.pack(side=tkinter.TOP, fill=tkinter.X)
+        self.contrast_reset.pack(side=tkinter.TOP, fill=tkinter.X)
+        self.sep3.pack(fill=tkinter.X)
+        self.brightness_bar.pack(side=tkinter.TOP, fill=tkinter.X)
+        self.brightness_reset.pack(side=tkinter.TOP, fill=tkinter.X)
+    
+    def on_contrast_bar_change(self, event):
+        if event is None:
+            self.contrast_var.set(250)
+        contrast_value = self.contrast_var.get()
+        factor = (0.01 * contrast_value) - 1.5
+        self.gui.getStove().adjust_contrast(factor)
+    
+    def on_brightness_bar_change(self, event):
+        if event is None:
+            self.brightness_var.set(250)
+        brightness_value = self.brightness_var.get()
+        factor = (250 - brightness_value) * 0.005
+        self.gui.getStove().adjust_brightness(factor)
     
     def press_act(self, widget: str):
         if not self.gui.getFuncButton().segButtonPressed():
@@ -527,7 +570,7 @@ class stove():
         self.pit = tkinter.Frame(self.gui.getLowerFrame().getFrameA(), background="black")
         self.sep = tkinter.Frame(self.gui.getLowerFrame().getFrameA(), width=1, bd=0, relief=tkinter.SUNKEN, bg="black")
         
-    
+        self.ax_img = None
         self.figure = Figure(figsize=(3,3), dpi=200)
         self.figure.subplots_adjust(left=0, right=1, top=1, bottom=0)
         self.subplot = self.figure.add_subplot(111)
@@ -570,13 +613,29 @@ class stove():
         
     def cook(self, abs: abstract):
         self.setLoaded(abs)
-        self.subplot.imshow(self.getLoaded().getImgNumpyRGB())
+        self.ax_img = self.subplot.imshow(self.getLoaded().getImgNumpyRGB())
         self.subplot.set_axis_off()
         self.canvas.draw()
     def dump(self):
         self.clearLoaded()
         self.subplot.clear()
         self.subplot.set_axis_off()
+        self.canvas.draw()
+    
+    def adjust_contrast(self, factor):
+        img = self.getLoaded().getImgNumpyRGB()
+        img = img.astype(np.float32) / 255.0
+        img = np.clip(0.5 + factor * (img - 0.5), 0, 1)
+        img = (img * 255).astype(np.uint8)
+        self.ax_img.set_data(img)
+        self.canvas.draw()
+    
+    def adjust_brightness(self, factor):
+        img = self.getLoaded().getImgNumpyRGB()
+        img = img.astype(np.float32) / 255.0
+        img = np.clip(factor + img, 0, 1)
+        img = (img * 255).astype(np.uint8)
+        self.ax_img.set_data(img)
         self.canvas.draw()
         
     def onCanvasClick(self, event: MouseEvent):
