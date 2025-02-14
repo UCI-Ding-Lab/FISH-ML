@@ -21,6 +21,8 @@ import concurrent.futures
 import logging
 import cv2
 
+import matPacker
+
 class FishToolBar(NavigationToolbar2Tk):
     def __init__(self, canvas, window, gui: FishGUI):
         super().__init__(canvas, window)
@@ -95,16 +97,11 @@ class progress():
     
     @staticmethod
     def export(gui: FishGUI):
-        selected_path = filedialog.askdirectory(title="Save Under...")
-        if selected_path:
-            folder_name = simpledialog.askstring("Dataset", "Enter the name of the Dataset folder:")
-            if folder_name:
-                new_folder_path = pathlib.Path(selected_path) / folder_name
-                try:
-                    os.makedirs(new_folder_path)
-                except FileExistsError:
-                    messagebox.showwarning("Warning", "Folder already exists!")
-                    return
+        f = filedialog.asksaveasfilename(defaultextension=".mat", 
+                                         filetypes=[("Matlab files", "*.mat")],
+                                         title="Export Results As")
+        if not f: 
+            return
         toSave = [i for i in abstract.getPool() if i.selected and len(i.segmentExplict)]
         d = {"name":[],"image":[],"xy":[],"masks":[]}
         for abs in toSave:
@@ -112,9 +109,8 @@ class progress():
             d["image"].append(abs.getImgNumpyRGB())
             d["xy"].append([seg.xy for seg in abs.segment])
             d["masks"].append([seg.box for seg in abs.segment])
-        dataset = Dataset.from_dict(d)
-        dataset.save_to_disk(new_folder_path)
-        messagebox.showinfo("Done", "Dataset exported successfully!")
+        matPacker.create(d["name"], d["xy"], d["masks"], f)
+        
 
     @staticmethod
     def generateBbox(gui: FishGUI, abstracts: list[abstract]):
@@ -673,10 +669,12 @@ class stove():
                 elif self.gui.getSeasoning().eraserButtonPressed() and segment.getBuffer() and segment.getBuffer().selected:
                     self.xs = [event.xdata]
                     self.ys = [event.ydata]
+                    
+                    self.bufferSetCurrent(1)
+                    self.bufferSetCurrent(2)
+                    self.canvas.restore_region(self.BILT_BUFFER1)
                     self.marker_draw(event.xdata, event.ydata)
-                    self.get_tb_pointer().set_center((event.xdata, event.ydata))
-                    self.subplot.add_patch(self.get_tb_pointer())
-                    self.canvas.draw()
+                    self.canvas.blit(self.subplot.bbox)
                 else:
                     target = self.getLoaded().findSegFromPoint(event.xdata, event.ydata)
                     segment.clearBufferAndDeselect()
@@ -704,14 +702,15 @@ class stove():
 
             elif self.gui.getSeasoning().eraserButtonPressed() and segment.getBuffer() and segment.getBuffer().selected:
                 final = list(zip(self.xs, self.ys))
+                
                 for marker in self.markers:
                     marker.remove()
                 self.markers.clear()
-                self.get_tb_pointer().remove()
-                self.canvas.draw_idle()
                 for x, y in final:
                     segment.getBuffer().update_mask(x, y, self.gui.getSeasoning().get_marker_size(), erase=True)
                 segment.getBuffer().recal_patch()
+                self.canvas.draw_idle()
+                
                 self.xs.clear()
                 self.ys.clear()
 
@@ -792,14 +791,19 @@ class stove():
                         for x, y in zip(x_values, y_values):
                             self.xs.append(x)
                             self.ys.append(y)
+                            
+                            self.bufferSetCurrent(1)
+                            self.canvas.restore_region(self.BILT_BUFFER1)
                             self.marker_draw(x, y)
-                            self.get_tb_pointer().set_center((x, y))
+                            self.canvas.blit(self.subplot.bbox)   
                 else:
                     self.xs.append(current_x)
                     self.ys.append(current_y)
-                    self.marker_draw(current_x, current_y)
-                    self.get_tb_pointer().set_center((current_x, current_y))
-                self.canvas.draw()
+                    
+                    self.canvas.bufferSetCurrent(1)
+                    self.canvas.restore_region(self.BILT_BUFFER1)
+                    self.marker_draw(x, y)
+                    self.canvas.blit(self.subplot.bbox)
                 segment.getBuffer().update_mask(current_x, current_y, self.gui.getSeasoning().get_marker_size(), erase=True)
 
     def marker_draw(self, x, y):
