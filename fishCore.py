@@ -177,6 +177,9 @@ class Fish():
         TEXT_PROMPT = "white flower"
         BOX_TRESHOLD = 0.02
         TEXT_TRESHOLD = 0.25
+        # TEXT_PROMPT = "white cell nucleus"
+        # BOX_TRESHOLD = 0.99
+        # TEXT_TRESHOLD = 0.99
 
         boxes, logits, phrases = dino.predict(
             model=model, 

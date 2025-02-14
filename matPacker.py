@@ -40,14 +40,15 @@ def create(name: list[str], xy: list[list[(float,float),],], masks: list[list[np
             cell_data[0, 0]["size"] = np.array([np.prod(masks[eachImg][eachCell].shape)])
             cell_data[0, 0]["area"] = np.array([np.sum(masks[eachImg][eachCell])])
 
-            cell_data[0, 0]["progenitor"] = None
-            cell_data[0, 0]["descendants"] = None
-            cell_data[0, 0]["Fmask"] = None
-            cell_data[0, 0]["Acom"] = None
-            cell_data[0, 0]["Fpixels"] = None
-            cell_data[0, 0]["Ftotal"] = None
-            cell_data[0, 0]["Fmax"] = None
-            cell_data[0, 0]["Fmean"] = None
+            # Those are all meant to be 'None' in python, but matlab needs them to be empty arrays
+            cell_data[0, 0]["progenitor"] = np.array([], dtype='O')  # Empty array for objects
+            cell_data[0, 0]["descendants"] = np.array([], dtype='O')
+            cell_data[0, 0]["Fmask"] = np.zeros((0, 0))  # Empty mask
+            cell_data[0, 0]["Acom"] = np.array([np.nan])  # NaN for missing numerical values
+            cell_data[0, 0]["Fpixels"] = np.array([], dtype='O')
+            cell_data[0, 0]["Ftotal"] = np.array([0])
+            cell_data[0, 0]["Fmax"] = np.array([0])
+            cell_data[0, 0]["Fmean"] = np.array([0])
             
             cells[0, eachCell] = cell_data
 

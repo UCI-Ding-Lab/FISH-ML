@@ -15,7 +15,7 @@ For zero-shot segmentation, ensure that your images meet the following specifica
 ## 🛠️ Environment Setup
 
 ### Initial Installation
-Follow these steps to set up the environment for the first time. If you have already completed the setup, please do not overwrite your existing environment and proceed to the [Run FishUI](#-run-fishui) section.
+Follow these steps to set up the environment for the first time. If you have already completed the setup, please do not overwrite your existing environment and proceed to the [Run FishUI](#-running-fishui) section.
 
 #### Conda Installation
 You can install the necessary dependencies using the provided `env.yaml` file in Anaconda. Alternatively, follow these steps:
