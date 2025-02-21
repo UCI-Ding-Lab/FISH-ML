@@ -1,20 +1,14 @@
 # Standard Library Imports
-import os
-import json
 import pathlib
 import logging
 import configparser
-from typing import Tuple, List
+from typing import Tuple
 
 # Third-Party Imports
 import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
-from sklearn.cluster import DBSCAN
 import torch
 from torchvision.ops import box_convert
-from transformers import SamModel, SamConfig, SamProcessor, pipeline
-from scipy.ndimage import binary_erosion
+from transformers import SamModel, SamConfig, SamProcessor
 from PIL import Image
 import cv2
 
@@ -22,7 +16,6 @@ import cv2
 import groundingdino.datasets.transforms as T
 import groundingdino.util.inference as dino
 import groundingdino
-from segment_anything import SamPredictor
 
 class ColoredFormatter(logging.Formatter):
     COLORS = {
@@ -43,10 +36,16 @@ class ColoredFormatter(logging.Formatter):
 
 class Fish():
     def __init__(self,config: pathlib.Path) -> None:
-        # config.ini
+        self.setup__config(config)
+        self.setup__logger()
+        self.setup__asset()
+        self.setup__ai()
+        self.finetune = self.Finetune(self)
+    
+    def setup__config(self, config):
         self.config = configparser.ConfigParser()
         self.config.read(config)
-        # logger
+    def setup__logger(self):
         self.logger = logging.getLogger('fishcore')
         self.logger.setLevel(logging.INFO)
         console_handler = logging.StreamHandler()
@@ -54,28 +53,22 @@ class Fish():
         formatter = ColoredFormatter("[%(asctime)s][%(levelname)s] %(message)s")
         console_handler.setFormatter(formatter)
         self.logger.addHandler(console_handler)
-        # transformers logging level
         loggers = [logging.getLogger(name) for name in logging.root.manager.loggerDict]
         for logger in loggers:
             if "transformers" in logger.name.lower():
                 logger.setLevel(logging.ERROR)
-        # asset
+    def setup__asset(self):
         self.asset_folder_path = pathlib.Path(self.config["general"]["asset_folder_path"])
         self.supported_version = self.config["general"]["supported_version"].split(",")
         self.model_version = None
         self.model_path = None
-        # ai
+    def setup__ai(self):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model = None
         self.model_config = SamConfig.from_pretrained("facebook/sam-vit-base")
         self.processor = SamProcessor.from_pretrained("facebook/sam-vit-huge")
-        # dino
         self.gdino_config = pathlib.Path(groundingdino.__path__[0]) / self.config["dino"]["config"]
         self.gdino_weights = pathlib.Path(groundingdino.__path__[0]) / self.config["dino"]["weights"]
-        # module
-        self.finetune = self.Finetune(self)
-        
-        #self.assets_validation()
     
     def set_model_version(self,v):
         if v in self.supported_version:
@@ -90,96 +83,82 @@ class Fish():
         else:
             self.logger.error(f"CHECK: Version {v} is not supported")
     
-    def assets_validation(self):
-        """
-        unfinished
-        """
-        model_folder = self.asset_folder_path / "model"
-        for v in self.supported_version:
-            if not (model_folder / f"fish_{v}.pth").exists():
-                self.logger.error(f"CHECK: Model file for version {v} is missing")
-    
     @staticmethod
-    def hdr_to_rgb(hdr_image: np.ndarray, dynamic_range: int) -> np.ndarray:
+    def helper__hdr2Rgb(hdr_image: np.ndarray, dynamic_range: int) -> np.ndarray:
         scale_factor = 255 / dynamic_range
         scaled_image = (hdr_image * scale_factor).astype(np.uint8)
         rgb_image = np.stack((scaled_image,) * 3, axis=-1)
         return rgb_image
+    @staticmethod
+    def helper__hdr2RgbNorm(hdr_image: np.ndarray, brightness_factor: int) -> np.ndarray:
+        img_normalized = cv2.normalize(hdr_image, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+        img_rgb = cv2.cvtColor(img_normalized, cv2.COLOR_GRAY2RGB)
+        return np.clip(img_rgb * brightness_factor, 0, 255).astype(np.uint8)
+    @staticmethod
+    def helper__rectArea(rect):
+        x1, y1, x2, y2 = rect
+        return (x2 - x1) * (y2 - y1)
+    @staticmethod
+    def helper__computeIntersectionArea(rect1, rect2):
+        x1, y1, x2, y2 = rect1
+        x3, y3, x4, y4 = rect2
+        xi1 = max(x1, x3)
+        yi1 = max(y1, y3)
+        xi2 = min(x2, x4)
+        yi2 = min(y2, y4)
+        if xi1 < xi2 and yi1 < yi2:
+            return (xi2 - xi1) * (yi2 - yi1)
+        else:
+            return 0
+    @staticmethod
+    def helper__filterAlgorithm(image_source: np.ndarray, boxes: torch.Tensor) -> list:
+        h, w, _ = image_source.shape
+        boxes = boxes * torch.Tensor([w, h, w, h])
+        xyxy = box_convert(boxes=boxes, in_fmt="cxcywh", out_fmt="xyxy").numpy().astype(np.uint16).tolist()
+        bboxes = []
+        for box in xyxy:
+            min_x, min_y, max_x, max_y = box
+            area = (max_x - min_x) * (max_y - min_y)
+            if area < 200 or area > 160000:
+                continue
+            if max_x - min_x < 20 or max_y - min_y < 20:
+                continue
+            bboxes.append(box)
+        rects = np.array(bboxes)
+        N = len(rects)
+        to_delete = set()
+        areas = np.array([Fish.helper__rectArea(rect) for rect in rects])
+        for i in range(N):
+            for j in range(i + 1, N):
+                if j in to_delete:
+                    continue
+                intersection_area = Fish.helper__computeIntersectionArea(rects[i], rects[j])
+                if intersection_area >= 0.9 * min(areas[i], areas[j]):
+                    if areas[i] > areas[j]:
+                        to_delete.add(i)
+                    else:
+                        to_delete.add(j)
+        filtered_rects = [rect for k, rect in enumerate(rects) if k not in to_delete]
+        return np.array(filtered_rects).tolist()
+    @staticmethod
+    def helper__imageTransform4Dino(img: np.ndarray) -> Tuple[np.array, torch.Tensor]:
+        transform = T.Compose([T.RandomResize([800], max_size=1333),
+                               T.ToTensor(),
+                               T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),])
+        image_source = Image.fromarray(Fish.helper__hdr2RgbNorm(img, 1))
+        image = np.asarray(image_source)
+        image_transformed, _ = transform(image_source, None)
+        return image, image_transformed
     
     @staticmethod
     def dino_bbox(config: str, weights: str, img: np.ndarray) -> dict:
-        def load_image(img: np.ndarray) -> Tuple[np.array, torch.Tensor]:
-            def grayscale_to_rgb(grayscale_img) -> np.ndarray:
-                img_normalized = cv2.normalize(grayscale_img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-                img_rgb = cv2.cvtColor(img_normalized, cv2.COLOR_GRAY2RGB)
-                brightness_factor = 1
-                return np.clip(img_rgb * brightness_factor, 0, 255).astype(np.uint8)
-            
-            transform = T.Compose([T.RandomResize([800], max_size=1333),
-                                   T.ToTensor(),
-                                   T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),])
-            image_source = Image.fromarray(grayscale_to_rgb(img))
-            image = np.asarray(image_source)
-            image_transformed, _ = transform(image_source, None)
-            return image, image_transformed
-        
-        def finalization(image_source: np.ndarray, boxes: torch.Tensor, logits: torch.Tensor, phrases: List[str]) -> list:
-            def filter_rects(rects):
-                def compute_area(rect):
-                    x1, y1, x2, y2 = rect
-                    return (x2 - x1) * (y2 - y1)
-                def compute_intersection_area(rect1, rect2):
-                    x1, y1, x2, y2 = rect1
-                    x3, y3, x4, y4 = rect2
-                    xi1 = max(x1, x3)
-                    yi1 = max(y1, y3)
-                    xi2 = min(x2, x4)
-                    yi2 = min(y2, y4)
-                    if xi1 < xi2 and yi1 < yi2:
-                        return (xi2 - xi1) * (yi2 - yi1)
-                    else:
-                        return 0
-                N = len(rects)
-                to_delete = set()
-                areas = np.array([compute_area(rect) for rect in rects])
-                for i in range(N):
-                    for j in range(i + 1, N):
-                        if j in to_delete:
-                            continue
-                        intersection_area = compute_intersection_area(rects[i], rects[j])
-                        if intersection_area >= 0.9 * min(areas[i], areas[j]):
-                            if areas[i] > areas[j]:
-                                to_delete.add(i)
-                            else:
-                                to_delete.add(j)
-                filtered_rects = [rect for k, rect in enumerate(rects) if k not in to_delete]
-                return np.array(filtered_rects)
-            
-            h, w, _ = image_source.shape
-            boxes = boxes * torch.Tensor([w, h, w, h])
-            xyxy = box_convert(boxes=boxes, in_fmt="cxcywh", out_fmt="xyxy").numpy().astype(np.uint16).tolist()
-            bboxes = []
-            for box in xyxy:
-                min_x, min_y, max_x, max_y = box
-                area = (max_x - min_x) * (max_y - min_y)
-                if area < 200 or area > 160000:
-                    continue
-                if max_x - min_x < 20 or max_y - min_y < 20:
-                    continue
-                bboxes.append(box)
-            bboxes = filter_rects(np.array(bboxes)).tolist()
-            return bboxes
         
         model = dino.load_model(config, weights)
-        # ic(model)
-        image_source, image = load_image(img)
+        image_source, image = Fish.helper__imageTransform4Dino(img)
 
         TEXT_PROMPT = "white flower"
         BOX_TRESHOLD = 0.02
         TEXT_TRESHOLD = 0.25
-        # TEXT_PROMPT = "white cell nucleus"
-        # BOX_TRESHOLD = 0.99
-        # TEXT_TRESHOLD = 0.99
 
         boxes, logits, phrases = dino.predict(
             model=model, 
@@ -190,32 +169,8 @@ class Fish():
             device="cpu"
         )
         
-        finalized_bboxes = finalization(image_source, boxes, logits, phrases)
+        finalized_bboxes = Fish.helper__filterAlgorithm(image_source, boxes)
         return {"bright_points": "DINO", "clusters": "DINO", "bboxes": finalized_bboxes}
-    
-    @staticmethod
-    def cal_iou(result: np.ndarray, gt: list, gt_pos: list) -> Tuple[float, np.ndarray]:
-        """
-        Calculate the Intersection over Union (IoU) between a predicted mask and multiple ground truth masks.
-
-        Args:
-            result (np.ndarray): Prediction mask of shape (2048, 2048) containing binary contour lines.
-            gt (list): A list of small ground truth masks, each represented as a numpy array.
-            gt_pos (list): A list of positions corresponding to the locations of the ground truth masks in the format (y_start, x_start).
-
-        Returns:
-            Tuple[float, np.ndarray]: The IoU score and the combined ground truth mask.
-        """
-        whole_gt = np.zeros(result.shape, dtype=np.uint8)
-        for pos, gt in zip(gt_pos, gt):
-            y_strt, x_strt = pos
-            h, w = gt.shape
-            y_end, x_end = min(y_strt + h, 2048), min(x_strt + w, 2048)
-            whole_gt[y_strt:y_end, x_strt:x_end] |= gt[:y_end-y_strt, :x_end-x_strt]
-        intersection = np.logical_and(result, whole_gt)
-        union = np.logical_or(result, whole_gt)
-        iou_score = np.sum(intersection) / np.sum(union)
-        return iou_score, whole_gt
     
     def AppIntDINOwrapper(self, img: np.ndarray) -> list[list]:
         return Fish.dino_bbox(self.gdino_config, self.gdino_weights, img)["bboxes"]
@@ -239,7 +194,7 @@ class Fish():
             else:
                 raw = {"bright_points": "OF", "clusters": "OF", "bboxes": bbox}
             
-            img = Fish.hdr_to_rgb(img, int(self.fish.config["predict"]["dynamic_range"]))
+            img = Fish.helper__hdr2Rgb(img, int(self.fish.config["predict"]["dynamic_range"]))
             
             masks = None
             inputs = self.fish.processor(img,
@@ -260,113 +215,7 @@ class Fish():
             # masks (n, 2048, 2048)
             
             return raw, masks
-            
-            self.fish.logger.debug(f"PRED: combination started")
-            line_result = np.zeros(img.shape[:2], dtype=np.uint8)
-            area_result = np.zeros(img.shape[:2], dtype=np.uint8)
-            for ind, bbox in enumerate(raw["bboxes"]):
-                min_x, min_y, max_x, max_y = bbox
-                if max_x <= min_x or max_y <= min_y:
-                    continue
-                seg = masks[ind]
-                seg = seg[min_y:max_y, min_x:max_x]
-                area_result[min_y:max_y, min_x:max_x] = seg
-                if self.fish.config["info"]["mask_erosion"].lower() == "true":
-                    er_factor = int(self.fish.config["predict"]["erosion_factor"])
-                    eroded_mask = binary_erosion(seg, structure=np.ones((er_factor, er_factor)))
-                    contour_seg = seg - eroded_mask
-                    line_result[min_y:max_y, min_x:max_x] = contour_seg
-            self.fish.logger.info("PRED: combination completed")
-            
-            return raw, masks, line_result, area_result
-            # line_result is the prediction with contour only, area_result is concrete prediction
         
         def AppIntPREDICTwrapper(self, img: np.ndarray, bbox: list[list]=None) -> np.ndarray:
             return self.predict(img, bbox)[1]
-        
-        def info(self, img: np.ndarray, gt: list, gt_pos: list) -> None:
-            raw, masks, line_result, area_result = self.predict(img)
-            _, ax = plt.subplots(1, figsize=(8, 8))
-            ax.imshow(img, cmap='gray')
-            if self.fish.config["info"]["mask_erosion"].lower() == "true":
-                result = line_result
-            else:
-                result = area_result
-            
-            if self.fish.config["info"]["overlay"].lower() == "true":
-                overlay = np.zeros((img.shape[0], img.shape[1], 4), dtype=np.uint8)
-                overlay[result == 1] = np.array([255, 255, 0, 255])
-                ax.imshow(overlay)
-            if self.fish.config["info"]["show_iou"].lower() == "true":
-                iou, _ = Fish.cal_iou(area_result, gt, gt_pos)
-                ax.text(0.05, 0.95, f'IoU: {iou:.2f}', transform=ax.transAxes
-                                                    , fontsize=self.fish.config["info"]["iou_font"].lower()
-                                                    , verticalalignment='top'
-                                                    , bbox=dict(facecolor='white', alpha=0.5))
-            if self.fish.config["info"]["bbox_preview"].lower() == "true":
-                for bbox in raw["bboxes"]:
-                    min_x, min_y, max_x, max_y = bbox
-                    rect = patches.Rectangle((min_x, min_y),
-                                             max_x - min_x,
-                                             max_y - min_y,
-                                             linewidth=float(self.fish.config["info"]["bbox_preview_line_width"]),
-                                             edgecolor='r',
-                                             facecolor='none')
-                    ax.add_patch(rect)
-                if self.fish.config["info"]["show_cluster"].lower() == "true":
-                    for cluster in raw["clusters"]:
-                        ax.scatter(cluster[:, 1], cluster[:, 0], s=1, c='b')
-                if self.fish.config["info"]["show_brightest_point"].lower() == "true":
-                    ax.scatter(raw["bright_points"][:, 1], raw["bright_points"][:, 0], s=0.2, c='g')
-            plt.show()
-        
-        def validate(self, img_name, img: np.ndarray, gt: list, gt_pos: list) -> None:
-            raw, masks, line_result, area_result = self.predict(img)
-            fig_ax, ax = plt.subplots(1, figsize=(8, 8))
-            fig_bx, bx = plt.subplots(1, figsize=(8, 8))
-            ax.imshow(img, cmap='gray')
-            bx.imshow(img, cmap='gray')
-            if self.fish.config["info"]["mask_erosion"].lower() == "true":
-                result = line_result
-            else:
-                result = area_result
-            
-            if self.fish.config["info"]["overlay"].lower() == "true":
-                overlay = np.zeros((img.shape[0], img.shape[1], 4), dtype=np.uint8)
-                overlay[result == 1] = np.array([255, 255, 0, 255])
-                ax.imshow(overlay)
-            if self.fish.config["info"]["show_iou"].lower() == "true":
-                iou, whole_gt = Fish.cal_iou(area_result, gt, gt_pos)
-                bx.imshow(whole_gt, alpha=0.5)
-                ax.text(0.05, 0.95, f'IoU: {iou:.2f}', transform=ax.transAxes
-                                                    , fontsize=self.fish.config["info"]["iou_font"].lower()
-                                                    , verticalalignment='top'
-                                                    , bbox=dict(facecolor='white', alpha=0.5))
-            if self.fish.config["info"]["bbox_preview"].lower() == "true":
-                for bbox in raw["bboxes"]:
-                    min_x, min_y, max_x, max_y = bbox
-                    rect = patches.Rectangle((min_x, min_y),
-                                             max_x - min_x,
-                                             max_y - min_y,
-                                             linewidth=float(self.fish.config["info"]["bbox_preview_line_width"]),
-                                             edgecolor='r',
-                                             facecolor='none')
-                    ax.add_patch(rect)
-                if self.fish.config["info"]["show_cluster"].lower() == "true":
-                    for cluster in raw["clusters"]:
-                        ax.scatter(cluster[:, 1], cluster[:, 0], s=1, c='b')
-                if self.fish.config["info"]["show_brightest_point"].lower() == "true":
-                    ax.scatter(raw["bright_points"][:, 1], raw["bright_points"][:, 0], s=0.2, c='g')
-            if self.fish.config["validate"]["to_output"].lower() == "true":
-                output_folder = pathlib.Path(self.fish.config["validate"]["output_folder"])
-                os.makedirs(output_folder, exist_ok=True)
-                ax_plot_path = os.path.join(output_folder, f'{img_name}_a.png') # prediction
-                bx_plot_path = os.path.join(output_folder, f'{img_name}_b.png') # ground truth
-                fig_ax.savefig(ax_plot_path)
-                fig_bx.savefig(bx_plot_path)
-                plt.close(fig_ax)
-                plt.close(fig_bx)
-
-            else:
-                plt.show()
         

@@ -6,7 +6,7 @@ import pickle
 import os
 import numpy as np
 from PIL import (Image, ImageTk, ImageDraw)
-from tkinter import filedialog, messagebox, simpledialog
+from tkinter import filedialog, messagebox
 from matplotlib.figure import Figure 
 from matplotlib.backends.backend_tkagg import (FigureCanvasTkAgg, NavigationToolbar2Tk)
 from matplotlib.patches import Rectangle, Circle
@@ -14,11 +14,9 @@ from matplotlib.backend_bases import MouseEvent
 from matplotlib.path import Path
 from matplotlib.patches import PathPatch
 from skimage import measure
-from datasets import Dataset
 import fishCore
 import threading
 import concurrent.futures
-import logging
 import cv2
 
 import matPacker
