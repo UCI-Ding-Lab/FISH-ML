@@ -69,6 +69,8 @@ class Fish():
         self.processor = SamProcessor.from_pretrained("facebook/sam-vit-huge")
         self.gdino_config = pathlib.Path(groundingdino.__path__[0]) / self.config["dino"]["config"]
         self.gdino_weights = pathlib.Path(groundingdino.__path__[0]) / self.config["dino"]["weights"]
+        self.gdino_model = dino.load_model(self.gdino_config, self.gdino_weights)
+
     
     def set_model_version(self,v):
         if v in self.supported_version:
@@ -110,6 +112,7 @@ class Fish():
             return (xi2 - xi1) * (yi2 - yi1)
         else:
             return 0
+        
     @staticmethod
     def helper__filterAlgorithm(image_source: np.ndarray, boxes: torch.Tensor) -> list:
         h, w, _ = image_source.shape
@@ -119,9 +122,9 @@ class Fish():
         for box in xyxy:
             min_x, min_y, max_x, max_y = box
             area = (max_x - min_x) * (max_y - min_y)
-            if area < 200 or area > 160000:
+            if area < 800 or area > 100000:
                 continue
-            if max_x - min_x < 20 or max_y - min_y < 20:
+            if max_x - min_x < 40 or max_y - min_y < 40:
                 continue
             bboxes.append(box)
         rects = np.array(bboxes)
@@ -140,6 +143,7 @@ class Fish():
                         to_delete.add(j)
         filtered_rects = [rect for k, rect in enumerate(rects) if k not in to_delete]
         return np.array(filtered_rects).tolist()
+    
     @staticmethod
     def helper__imageTransform4Dino(img: np.ndarray) -> Tuple[np.array, torch.Tensor]:
         transform = T.Compose([T.RandomResize([800], max_size=1333),
@@ -151,17 +155,16 @@ class Fish():
         return image, image_transformed
     
     @staticmethod
-    def dino_bbox(config: str, weights: str, img: np.ndarray) -> dict:
+    def dino_bbox(gdino_model, img: np.ndarray) -> dict:
         
-        model = dino.load_model(config, weights)
         image_source, image = Fish.helper__imageTransform4Dino(img)
 
         TEXT_PROMPT = "white flower"
-        BOX_TRESHOLD = 0.02
-        TEXT_TRESHOLD = 0.25
+        BOX_TRESHOLD = 0.07
+        TEXT_TRESHOLD = 0.10
 
         boxes, logits, phrases = dino.predict(
-            model=model, 
+            model=gdino_model, 
             image=image, 
             caption=TEXT_PROMPT, 
             box_threshold=BOX_TRESHOLD, 
@@ -170,10 +173,10 @@ class Fish():
         )
         
         finalized_bboxes = Fish.helper__filterAlgorithm(image_source, boxes)
-        return {"bright_points": "DINO", "clusters": "DINO", "bboxes": finalized_bboxes}
+        return finalized_bboxes
     
     def AppIntDINOwrapper(self, img: np.ndarray) -> list[list]:
-        return Fish.dino_bbox(self.gdino_config, self.gdino_weights, img)["bboxes"]
+        return Fish.dino_bbox(self.gdino_model, img)
  
     class Finetune():
         def __init__(self, fish):
