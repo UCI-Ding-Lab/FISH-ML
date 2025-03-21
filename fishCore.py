@@ -161,7 +161,7 @@ class Fish():
 
         TEXT_PROMPT = "white flower"
         BOX_TRESHOLD = 0.07
-        TEXT_TRESHOLD = 0.10
+        TEXT_TRESHOLD = 0.05
 
         boxes, logits, phrases = dino.predict(
             model=gdino_model, 
