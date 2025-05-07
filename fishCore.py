@@ -145,6 +145,57 @@ class Fish():
         return np.array(filtered_rects).tolist()
     
     @staticmethod
+    def helper__filterAlgorithm__big(image_source: np.ndarray, boxes: torch.Tensor, input_points: np.ndarray) -> list:
+        # Convert the boxes to the original image size
+        h, w, _ = image_source.shape
+        boxes = boxes * torch.Tensor([w, h, w, h])
+        xyxy = box_convert(boxes=boxes, in_fmt="cxcywh", out_fmt="xyxy").numpy().astype(np.uint16).tolist()
+        # Hard filter area, keep only the boxes with area between 800 and 100000
+        bboxes = []
+        for box in xyxy:
+            min_x, min_y, max_x, max_y = box
+            area = (max_x - min_x) * (max_y - min_y)
+            if area < 800 or area > 100000:
+                continue
+            if max_x - min_x < 40 or max_y - min_y < 40:
+                continue
+            bboxes.append(box)
+        # Filter out boxes that have zero or more than 1 point inside
+        raw_rects = np.array(bboxes)
+        filtered_rects = []
+        for box in raw_rects:
+            min_x, min_y, max_x, max_y = box
+            count = 0
+            for x, y in input_points:
+                if min_x <= x <= max_x and min_y <= y <= max_y:
+                    count += 1
+                    if count > 1:
+                        break
+            if count == 1:
+                filtered_rects.append(box)
+        # Filter out boxes that have 90% overlap with other boxes and keep the bigger one
+        rects = np.array(filtered_rects)
+        N = len(rects)
+        to_delete = set()
+        areas = np.array([Fish.helper__rectArea(rect) for rect in rects])
+        for i in range(N):
+            for j in range(i + 1, N):
+                if j in to_delete:
+                    continue
+                intersection_area = Fish.helper__computeIntersectionArea(rects[i], rects[j])
+                if intersection_area >= 0.9 * min(areas[i], areas[j]):
+                    if areas[i] > areas[j]:
+                        to_delete.add(i)
+                    else:
+                        to_delete.add(j)
+        final_rects = []
+        for k, rect in enumerate(rects):
+            if k not in to_delete:
+                final_rects.append(rect.tolist())
+
+        return final_rects
+    
+    @staticmethod
     def helper__imageTransform4Dino(img: np.ndarray) -> Tuple[np.array, torch.Tensor]:
         transform = T.Compose([T.RandomResize([800], max_size=1333),
                                T.ToTensor(),
@@ -175,8 +226,32 @@ class Fish():
         finalized_bboxes = Fish.helper__filterAlgorithm(image_source, boxes)
         return finalized_bboxes
     
+    @staticmethod
+    def dino_bbox_big(gdino_model, img: np.ndarray, input_points: np.ndarray) -> dict:
+        
+        image_source, image = Fish.helper__imageTransform4Dino(img)
+
+        TEXT_PROMPT = "white flower"
+        BOX_TRESHOLD = 0.07
+        TEXT_TRESHOLD = 0.05
+
+        boxes, logits, phrases = dino.predict(
+            model=gdino_model, 
+            image=image, 
+            caption=TEXT_PROMPT, 
+            box_threshold=BOX_TRESHOLD, 
+            text_threshold=TEXT_TRESHOLD,
+            device="cpu"
+        )
+        
+        finalized_bboxes = Fish.helper__filterAlgorithm__big(image_source, boxes, input_points)
+        return finalized_bboxes
+    
     def AppIntDINOwrapper(self, img: np.ndarray) -> list[list]:
         return Fish.dino_bbox(self.gdino_model, img)
+    
+    def AppIntDINOwrapperB(self, img: np.ndarray, input_points: np.ndarray) -> list[list]:
+        return Fish.dino_bbox_big(self.gdino_model, img, input_points)
  
     class Finetune():
         def __init__(self, fish):

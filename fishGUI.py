@@ -18,6 +18,7 @@ import fishCore
 import threading
 import concurrent.futures
 import cv2
+import sl
 
 import matPacker
 
@@ -55,12 +56,6 @@ def timer(func):
         return result
     return wrapper
 
-class bundle():
-    def __init__(self) -> None:
-        self.path: pathlib.Path = None
-        self.bbox: list[list] = None
-        self.segment: list[np.ndarray] = None
-
 class progress():
     @staticmethod
     def save():
@@ -69,8 +64,9 @@ class progress():
                                          title="Save Session As")
         if not f: 
             return
+        b = abstract.grabPool()
         with open(f, "wb") as file:
-            pickle.dump(abstract.zip(), file)
+            pickle.dump(b, file)
         messagebox.showinfo("Done", "Session saved as " + f)
     
     @staticmethod
@@ -82,13 +78,14 @@ class progress():
                 data = pickle.load(file)
             abstract.getPool().clear()
             for b in data:
-                bund: bundle = b
-                if not pathlib.Path(bund.path).exists():
-                    messagebox.showwarning("Warning", f"Image {bund.path} not found!")
+                bund: sl.bundle = b
+                path, bbox, seg = bund.L()
+                if not pathlib.Path(path).exists():
+                    messagebox.showwarning("Warning", f"Image {path} not found!")
                     continue
-                abs = abstract(bund.path, gui.getTifSequence().gallery_frame, gui)
-                abs.bbox = [box(each, gui) for each in bund.bbox]
-                abs.segment = [segment(gui, seg) for seg in bund.segment]
+                abs = abstract(path, gui.getTifSequence().gallery_frame, gui)
+                abs.bbox = [box(each, gui) for each in bbox]
+                abs.segment = [segment(gui, segm) for segm in seg]
             abstract.sendFirst()
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load session: {e}")
@@ -976,10 +973,14 @@ class abstract():
 
     @property
     def boundingBoxRevised(self) -> list[list]:
+        if self.noBbox():
+            return []
         return [b.final for b in self.bbox]
     
     @property
     def segmentationRevised(self) -> list[np.ndarray]:
+        if self.noSegment():
+            return []
         return [s._segment__data.T for s in self.segment]
     
     @property
@@ -1083,20 +1084,11 @@ class abstract():
         cls.getBuffer().drawSegmentation = False
         cls.sendFocused()
     @classmethod
-    def zip(cls) -> list[bundle]:
+    def grabPool(cls) -> list[sl.bundle]:
         result = []
         for abs in cls.getPool():
             if abs.selected:
-                b = bundle()
-                b.path = abs.getAbsPath()
-                if abs.noBbox():
-                    b.bbox = []
-                else:
-                    b.bbox = abs.boundingBoxRevised
-                if abs.noSegment():
-                    b.segment = []
-                else:
-                    b.segment = abs.segmentationRevised
+                b = sl.bundle(abs.getAbsPath(),abs.boundingBoxRevised,abs.segmentationRevised)
                 result.append(b)
         return result
         
@@ -1138,7 +1130,7 @@ class tifSequence():
         self.base = tkinter.Canvas(container, height=74)
 
         self.scrollbar = tkinter.Scrollbar(container, orient=tkinter.HORIZONTAL, command=self.base.xview)
-        self.base.configure(yscrollcommand=self.scrollbar.set)
+        self.base.configure(xscrollcommand=self.scrollbar.set)
 
         self.gallery_frame = tkinter.Frame(self.base)
         self.base.create_window((0, 0), window=self.gallery_frame, anchor="nw")
@@ -1175,6 +1167,7 @@ class tifSequence():
         for path in tif_files:
             abs = abstract(path, self.gallery_frame, self.gui)
         abstract.sendFirst()
+        self.update_scrollregion()
     
     def resetPosition(self):
         self.base.xview_moveto(0)
@@ -1260,8 +1253,11 @@ class funcButton():
             folder = pathlib.Path(folder_path)
             tif_files = [str(file.resolve()) for file in folder.glob("*.tif")]
             self.gui.getTifSequence().addToGallery(tif_files)
-        pool = abstract.getPool()
-        progress.generateBbox(self.gui, abstracts=pool)
+            pool = abstract.getPool()
+            if len(pool) == 0:
+                FishGUI.popBox("w", "No Image", "No image is available")
+                return
+            progress.generateBbox(self.gui, abstracts=pool)
 
     def SELECT_call(self):
         if self.selectButtonPressed():
