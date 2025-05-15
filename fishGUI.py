@@ -134,13 +134,13 @@ class segment():
     
     @property
     def xy(self):
-        ys, xs = np.where(self.__data.T == 1)
+        xs, ys = np.where(self.__data.T == 1)
         return xs.min(), ys.min()
     
     @property
     def box(self):
         ys, xs = np.where(self.__data.T == 1)
-        return self.__data.T[xs.min():xs.max(), ys.min():ys.max()]
+        return self.__data.T[ys.min():ys.max(), xs.min():xs.max()]
         
     
     @property
