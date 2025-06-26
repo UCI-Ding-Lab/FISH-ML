@@ -606,12 +606,26 @@ class stove():
         self.setLoaded(abs)
         self.ax_img = self.subplot.imshow(self.getLoaded().getImgNumpyRGB())
         self.subplot.set_axis_off()
-        self.canvas.draw()
 
-        # bbox_nucleus = self.gui.getBackEnd().AppIntDINOwrapper(abs._abstract__img_np_nucleus)
-        # centers = [((b[0] + b[2]) / 2, (b[1] + b[3]) / 2) for b in bbox_nucleus]
-        # for center in centers:
-        #     self.subplot.add_patch(Circle(center, radius=6, edgecolor='limegreen', facecolor='limegreen'))
+        for bbox in self.getLoaded().bbox:
+            rect = Rectangle(
+                (bbox.final[0], bbox.final[1]),
+                bbox.final[2] - bbox.final[0],
+                bbox.final[3] - bbox.final[1],
+                edgecolor='red', facecolor='none', linewidth=1.0
+            )
+            self.subplot.add_patch(rect)
+
+        for seg in self.getLoaded().segment:
+            y, x = np.where(seg._segment__data.T > 0)
+            self.subplot.scatter(x, y, s=0.5, c='orange', marker='.', linewidths=0)
+            
+        bbox_list = self.getLoaded().bbox
+        centers = [((b.final[0]+b.final[2])/2, (b.final[1]+b.final[3])/2) for b in bbox_list]
+        for center in centers:
+            self.subplot.add_patch(Circle(center, radius=10, edgecolor='lightgreen', facecolor='lightgreen'))
+
+        self.canvas.draw()
 
     def dump(self):
         self.clearLoaded()
@@ -849,8 +863,9 @@ class abstract():
         self.__img_np_nucleus = nucleus
         self.__img_np_cyto1 = cyto1 # May use it in future
         self.__img_np_cyto2 = cyto2
- 
-        self.__img_pil_thumbnail = Image.fromarray(self.__img_np_cyto2).resize((64, 64))
+        
+        self.__img_np_rgb = self.grayscale_to_rgb(self.__img_np_cyto2)
+        self.__img_pil_thumbnail = Image.fromarray(self.__img_np_rgb).resize((64, 64))
         self.__img_tk_thumbnail = ImageTk.PhotoImage(self.__img_pil_thumbnail)
         
         self.__label = tkinter.Label(gallery_frame,
@@ -1136,7 +1151,7 @@ class abstract():
     def getImgNumpyGreyscale(self) -> np.ndarray:
         return self.__img_np_nucleus
     def getImgNumpyRGB(self) -> np.ndarray:
-        return self.__img_np_cyto2
+        return self.__img_np_rgb
     def getLabel(self) -> tkinter.Label:
         return self.__label
     def getAbsPath(self) -> pathlib.Path:
