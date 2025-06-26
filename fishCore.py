@@ -113,36 +113,36 @@ class Fish():
         else:
             return 0
         
-    @staticmethod
-    def helper__filterAlgorithm(image_source: np.ndarray, boxes: torch.Tensor) -> list:
-        h, w, _ = image_source.shape
-        boxes = boxes * torch.Tensor([w, h, w, h])
-        xyxy = box_convert(boxes=boxes, in_fmt="cxcywh", out_fmt="xyxy").numpy().astype(np.uint16).tolist()
-        bboxes = []
-        for box in xyxy:
-            min_x, min_y, max_x, max_y = box
-            area = (max_x - min_x) * (max_y - min_y)
-            if area < 800 or area > 100000:
-                continue
-            if max_x - min_x < 40 or max_y - min_y < 40:
-                continue
-            bboxes.append(box)
-        rects = np.array(bboxes)
-        N = len(rects)
-        to_delete = set()
-        areas = np.array([Fish.helper__rectArea(rect) for rect in rects])
-        for i in range(N):
-            for j in range(i + 1, N):
-                if j in to_delete:
-                    continue
-                intersection_area = Fish.helper__computeIntersectionArea(rects[i], rects[j])
-                if intersection_area >= 0.9 * min(areas[i], areas[j]):
-                    if areas[i] > areas[j]:
-                        to_delete.add(i)
-                    else:
-                        to_delete.add(j)
-        filtered_rects = [rect for k, rect in enumerate(rects) if k not in to_delete]
-        return np.array(filtered_rects).tolist()
+    # @staticmethod
+    # def helper__filterAlgorithm(image_source: np.ndarray, boxes: torch.Tensor) -> list:
+    #     h, w, _ = image_source.shape
+    #     boxes = boxes * torch.Tensor([w, h, w, h])
+    #     xyxy = box_convert(boxes=boxes, in_fmt="cxcywh", out_fmt="xyxy").numpy().astype(np.uint16).tolist()
+    #     bboxes = []
+    #     for box in xyxy:
+    #         min_x, min_y, max_x, max_y = box
+    #         area = (max_x - min_x) * (max_y - min_y)
+    #         if area < 800 or area > 100000:
+    #             continue
+    #         if max_x - min_x < 40 or max_y - min_y < 40:
+    #             continue
+    #         bboxes.append(box)
+    #     rects = np.array(bboxes)
+    #     N = len(rects)
+    #     to_delete = set()
+    #     areas = np.array([Fish.helper__rectArea(rect) for rect in rects])
+    #     for i in range(N):
+    #         for j in range(i + 1, N):
+    #             if j in to_delete:
+    #                 continue
+    #             intersection_area = Fish.helper__computeIntersectionArea(rects[i], rects[j])
+    #             if intersection_area >= 0.9 * min(areas[i], areas[j]):
+    #                 if areas[i] > areas[j]:
+    #                     to_delete.add(i)
+    #                 else:
+    #                     to_delete.add(j)
+    #     filtered_rects = [rect for k, rect in enumerate(rects) if k not in to_delete]
+    #     return np.array(filtered_rects).tolist()
     
     @staticmethod
     def helper__filterAlgorithm(image_source: np.ndarray, boxes: torch.Tensor) -> list:
@@ -190,7 +190,30 @@ class Fish():
         # Final list of filtered bounding boxes
         filtered_rects = [rect for k, rect in enumerate(rects) if k not in to_delete]
         return np.array(filtered_rects).tolist()
-    
+    @staticmethod
+    def helper__filterAlgorithm__big(image_source: np.ndarray, boxes: torch.Tensor, input_points: np.ndarray) -> list:
+        h, w, _ = image_source.shape
+        boxes = boxes * torch.tensor([w, h, w, h])
+        xyxy = box_convert(boxes=boxes, in_fmt="cxcywh", out_fmt="xyxy").numpy()
+
+        final_boxes = []
+        for center in input_points:
+            cx, cy = center
+            min_dist = float('inf')
+            best_box = None
+            for box in xyxy:
+                x1, y1, x2, y2 = box
+                box_cx = (x1 + x2) / 2
+                box_cy = (y1 + y2) / 2
+                dist = np.sqrt((cx - box_cx)**2 + (cy - box_cy)**2)
+                if dist < min_dist:
+                    min_dist = dist
+                    best_box = box
+            if best_box is not None:
+                final_boxes.append(best_box.astype(np.uint16).tolist())
+
+        return final_boxes
+
     @staticmethod
     def helper__imageTransform4Dino(img: np.ndarray) -> Tuple[np.array, torch.Tensor]:
         transform = T.Compose([T.RandomResize([800], max_size=1333),
