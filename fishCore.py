@@ -346,16 +346,10 @@ class Fish():
             return raw, masks
         
         def predict_cytoplasm(self, img: np.ndarray, bboxes: list[list]) -> np.ndarray:
-            """
-            Given a grayscale or 3-channel cytoplasm image and a list of bounding boxes,
-            uses SAM in box+point mode (multimask_output=True) to produce one tight
-            segmentation mask per bbox. Returns an array of shape (N, H, W), dtype uint8.
-            """
-            # 1) Logging
             print(f"[CYTO] Starting prediction for {len(bboxes)} cells")
             print(f"[CYTO] Input image shape: {img.shape}, dtype: {img.dtype}")
 
-            # 2) Convert to RGB if needed
+            # Convert to RGB if needed
             if img.ndim == 2:
                 img_rgb = Fish.helper__hdr2Rgb(
                     img, int(self.fish.config["predict"]["dynamic_range"])
@@ -367,22 +361,19 @@ class Fish():
             else:
                 raise ValueError(f"[CYTO] Invalid image format: expected (H,W) or (H,W,3), got {img.shape}")
 
-            # 3) Compute centers & labels
             centers = np.array([[(b[0] + b[2]) / 2, (b[1] + b[3]) / 2] for b in bboxes])
             labels  = np.ones(len(centers), dtype=int)
-
             all_masks = []
             self.fish.model.eval()
 
-            # 4) Loop per cell: prompt SAM + pick best mask
             for idx, (box, point, label) in enumerate(zip(bboxes, centers, labels)):
                 print(f"[CYTO] Cell {idx}: box={box}, point={point.tolist()}")
 
                 inputs = self.fish.processor(
                     images=img_rgb,
-                    input_boxes=[[box]],           # list of one box
-                    input_points=[[point.tolist()]],# list of one list of floats
-                    input_labels=[[int(label)]],   # list of one list of ints
+                    input_boxes=[[box]],           
+                    input_points=[[point.tolist()]],
+                    input_labels=[[int(label)]],   
                     return_tensors="pt",
                     multimask_output=True
                 ).to(self.fish.device)
@@ -405,7 +396,6 @@ class Fish():
 
             print(f"[CYTO] Completed segmentation for {len(all_masks)} cells")
 
-            # stack into (N, H, W)
             return np.stack(all_masks, axis=0)
 
 
