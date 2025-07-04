@@ -190,29 +190,61 @@ class Fish():
         # Final list of filtered bounding boxes
         filtered_rects = [rect for k, rect in enumerate(rects) if k not in to_delete]
         return np.array(filtered_rects).tolist()
+    
     @staticmethod
     def helper__filterAlgorithm__big(image_source: np.ndarray, boxes: torch.Tensor, input_points: np.ndarray) -> list:
+        # Convert bounding boxes to original image size
         h, w, _ = image_source.shape
-        boxes = boxes * torch.tensor([w, h, w, h])
-        xyxy = box_convert(boxes=boxes, in_fmt="cxcywh", out_fmt="xyxy").numpy()
+        boxes = boxes * torch.Tensor([w, h, w, h])
+        xyxy = box_convert(boxes=boxes, in_fmt="cxcywh", out_fmt="xyxy").numpy().astype(np.uint16).tolist()
 
-        final_boxes = []
-        for center in input_points:
-            cx, cy = center
-            min_dist = float('inf')
-            best_box = None
-            for box in xyxy:
-                x1, y1, x2, y2 = box
-                box_cx = (x1 + x2) / 2
-                box_cy = (y1 + y2) / 2
-                dist = np.sqrt((cx - box_cx)**2 + (cy - box_cy)**2)
-                if dist < min_dist:
-                    min_dist = dist
-                    best_box = box
-            if best_box is not None:
-                final_boxes.append(best_box.astype(np.uint16).tolist())
+        # Hard filter by area and size thresholds
+        bboxes = []
+        for box in xyxy:
+            min_x, min_y, max_x, max_y = box
+            area = (max_x - min_x) * (max_y - min_y)
+            if area < 800 or area > 100000:
+                continue
+            if max_x - min_x < 40 or max_y - min_y < 40:
+                continue
+            bboxes.append(box)
 
-        return final_boxes
+        # Filter boxes containing exactly one input point
+        raw_rects = np.array(bboxes)
+        filtered_rects = []
+        for box in raw_rects:
+            min_x, min_y, max_x, max_y = box
+            count = 0
+            for x, y in input_points:
+                if min_x <= x <= max_x and min_y <= y <= max_y:
+                    count += 1
+                    if count > 1:
+                        break
+            if count == 1:
+                filtered_rects.append(box)
+
+        # Remove boxes with ≥90% overlap, keep only the larger one
+        rects = np.array(filtered_rects)
+        N = len(rects)
+        to_delete = set()
+        areas = np.array([Fish.helper__rectArea(rect) for rect in rects])
+        for i in range(N):
+            for j in range(i + 1, N):
+                if j in to_delete:
+                    continue
+                intersection_area = Fish.helper__computeIntersectionArea(rects[i], rects[j])
+                if intersection_area >= 0.9 * min(areas[i], areas[j]):
+                    if areas[i] > areas[j]:
+                        to_delete.add(i)
+                    else:
+                        to_delete.add(j)
+
+        # Return the final list of filtered bounding boxes
+        final_rects = []
+        for k, rect in enumerate(rects):
+            if k not in to_delete:
+                final_rects.append(rect.tolist())
+        return final_rects
 
     @staticmethod
     def helper__imageTransform4Dino(img: np.ndarray) -> Tuple[np.array, torch.Tensor]:
@@ -285,12 +317,12 @@ class Fish():
                 return
             
             if not bbox:
-                raw = Fish.dino_bbox(self.fish.gdino_config, self.fish.gdino_weights, img)
+                raw = Fish.dino_bbox(self.fish.gdino_config, self.fish.gdino_weights, img) 
                 self.fish.logger.info(f"CLU: found {len(raw['bright_points'])} bright points")
                 self.fish.logger.info(f"CLU: found {len(raw['bboxes'])} bounding boxes")
             else:
                 raw = {"bright_points": "OF", "clusters": "OF", "bboxes": bbox}
-            
+
             img = Fish.helper__hdr2Rgb(img, int(self.fish.config["predict"]["dynamic_range"]))
             
             masks = None
@@ -313,6 +345,74 @@ class Fish():
             
             return raw, masks
         
+        def predict_cytoplasm(self, img: np.ndarray, bboxes: list[list]) -> np.ndarray:
+            """
+            Given a grayscale or 3-channel cytoplasm image and a list of bounding boxes,
+            uses SAM in box+point mode (multimask_output=True) to produce one tight
+            segmentation mask per bbox. Returns an array of shape (N, H, W), dtype uint8.
+            """
+            # 1) Logging
+            print(f"[CYTO] Starting prediction for {len(bboxes)} cells")
+            print(f"[CYTO] Input image shape: {img.shape}, dtype: {img.dtype}")
+
+            # 2) Convert to RGB if needed
+            if img.ndim == 2:
+                img_rgb = Fish.helper__hdr2Rgb(
+                    img, int(self.fish.config["predict"]["dynamic_range"])
+                )
+                print("[CYTO] Converted grayscale → RGB via helper__hdr2Rgb")
+            elif img.ndim == 3 and img.shape[2] == 3:
+                img_rgb = img.astype(np.uint8)
+                print("[CYTO] Using pre-formatted 3-channel image as RGB")
+            else:
+                raise ValueError(f"[CYTO] Invalid image format: expected (H,W) or (H,W,3), got {img.shape}")
+
+            # 3) Compute centers & labels
+            centers = np.array([[(b[0] + b[2]) / 2, (b[1] + b[3]) / 2] for b in bboxes])
+            labels  = np.ones(len(centers), dtype=int)
+
+            all_masks = []
+            self.fish.model.eval()
+
+            # 4) Loop per cell: prompt SAM + pick best mask
+            for idx, (box, point, label) in enumerate(zip(bboxes, centers, labels)):
+                print(f"[CYTO] Cell {idx}: box={box}, point={point.tolist()}")
+
+                inputs = self.fish.processor(
+                    images=img_rgb,
+                    input_boxes=[[box]],           # list of one box
+                    input_points=[[point.tolist()]],# list of one list of floats
+                    input_labels=[[int(label)]],   # list of one list of ints
+                    return_tensors="pt",
+                    multimask_output=True
+                ).to(self.fish.device)
+
+                with torch.no_grad():
+                    outputs = self.fish.model(**inputs)
+
+                # yields a list of 3 masks per box: shape (3, H, W)
+                candidates = self.fish.processor.image_processor.post_process_masks(
+                    masks=outputs.pred_masks.cpu(),
+                    original_sizes=inputs["original_sizes"].cpu(),
+                    reshaped_input_sizes=inputs["reshaped_input_sizes"].cpu(),
+                    mask_threshold=float(self.fish.config["predict"]["mask_threshold"])
+                )[0]
+
+                # pick the largest-area mask
+                areas     = [(m > 0).sum() for m in candidates]
+                best_mask = candidates[np.argmax(areas)].numpy().astype(np.uint8)
+                all_masks.append(best_mask)
+
+            print(f"[CYTO] Completed segmentation for {len(all_masks)} cells")
+
+            # stack into (N, H, W)
+            return np.stack(all_masks, axis=0)
+
+
+                    
         def AppIntPREDICTwrapper(self, img: np.ndarray, bbox: list[list]=None) -> np.ndarray:
             return self.predict(img, bbox)[1]
+        
+        def AppIntPREDICTCytoplasmWrapper(self, img: np.ndarray, bbox: list[list]=None) -> np.ndarray:
+            return self.predict_cytoplasm(img, bbox)
         
