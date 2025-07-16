@@ -317,10 +317,13 @@ class Fish():
                 return
             
             if not bbox:
-                raw = Fish.dino_bbox(self.fish.gdino_config, self.fish.gdino_weights, img) 
+                # raw = Fish.dino_bbox(self.fish.gdino_config, self.fish.gdino_weights, img)
+                print("BBox not found, generating one with DINO...")
+                raw = Fish.dino_bbox(self.fish.gdino_config, img)
                 self.fish.logger.info(f"CLU: found {len(raw['bright_points'])} bright points")
                 self.fish.logger.info(f"CLU: found {len(raw['bboxes'])} bounding boxes")
             else:
+                print("Found BBox to use...")
                 raw = {"bright_points": "OF", "clusters": "OF", "bboxes": bbox}
 
             img = Fish.helper__hdr2Rgb(img, int(self.fish.config["predict"]["dynamic_range"]))
