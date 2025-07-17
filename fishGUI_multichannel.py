@@ -854,9 +854,9 @@ class abstract():
                 f"Expected a 3-channel TIF with shape (3, H, W), but got shape {self.__img_np_stack.shape} from {self.__abs_path.name}"
             )
 
-        nucleus = self.__img_np_stack[0]
-        cyto1 = self.__img_np_stack[1]
-        cyto2 = self.__img_np_stack[2]
+        nucleus = self.__img_np_stack[2]
+        cyto1 = self.__img_np_stack[0]
+        cyto2 = self.__img_np_stack[1]
         cyto1 = cv2.normalize(cyto1, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
         cyto2 = cv2.normalize(cyto2, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
         nucleus = cv2.normalize(nucleus, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
@@ -864,7 +864,7 @@ class abstract():
         self.__img_np_cyto1 = cyto1 # May use it in future
         self.__img_np_cyto2 = cyto2
         
-        self.__img_np_rgb = self.grayscale_to_rgb(self.__img_np_cyto2)
+        self.__img_np_rgb = self.grayscale_to_rgb(self.__img_np_cyto1)
         self.__img_pil_thumbnail = Image.fromarray(self.__img_np_rgb).resize((64, 64))
         self.__img_tk_thumbnail = ImageTk.PhotoImage(self.__img_pil_thumbnail)
         
@@ -903,8 +903,8 @@ class abstract():
         def job():
             bbox_nucleus = self.gui.getBackEnd().AppIntDINOwrapper(self.__img_np_nucleus)
             centers = [((b[0] + b[2]) / 2, (b[1] + b[3]) / 2) for b in bbox_nucleus]
-            bbox_cyto = self.gui.getBackEnd().AppIntDINOwrapperB(self.__img_np_cyto2, centers)
-            masks: np.ndarray = self.gui.getBackEnd().finetune.AppIntPREDICTwrapper(self.__img_np_cyto2, bbox_cyto)
+            bbox_cyto = self.gui.getBackEnd().AppIntDINOwrapperB(self.__img_np_cyto1, centers)
+            masks: np.ndarray = self.gui.getBackEnd().finetune.AppIntPREDICTwrapper(self.__img_np_cyto1, bbox_cyto)
             for m in masks:
                 self.__seg.append(segment(self.gui, m))
             self.segment_generated = True
@@ -982,8 +982,13 @@ class abstract():
     @property
     def bbox(self) -> list[box]:
         if not self.bbox_generated:
-            raw = self.gui.getBackEnd().AppIntDINOwrapper(self.__img_np_nucleus) # list[list]
-            self.__bbox = [box(each, self.gui) for each in raw]
+            nuc_boxes = self.gui.getBackEnd().AppIntDINOwrapper(self.__img_np_nucleus)
+            centers = [
+                ((x0 + x1) / 2, (y0 + y1) / 2)
+                for x0, y0, x1, y1 in nuc_boxes
+            ]
+            cyto_boxes = self.gui.getBackEnd().AppIntDINOwrapperB(self.__img_np_cyto1, centers)
+            self.__bbox = [box(b, self.gui) for b in cyto_boxes]
             self.bbox_generated = True
         return self.__bbox
     @bbox.setter
