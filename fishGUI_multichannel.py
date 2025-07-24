@@ -607,23 +607,23 @@ class stove():
         self.ax_img = self.subplot.imshow(self.getLoaded().getImgNumpyRGB())
         self.subplot.set_axis_off()
 
-        for bbox in self.getLoaded().bbox:
-            rect = Rectangle(
-                (bbox.final[0], bbox.final[1]),
-                bbox.final[2] - bbox.final[0],
-                bbox.final[3] - bbox.final[1],
-                edgecolor='red', facecolor='none', linewidth=1.0
-            )
-            self.subplot.add_patch(rect)
+        # for bbox in self.getLoaded().bbox:
+        #     rect = Rectangle(
+        #         (bbox.final[0], bbox.final[1]),
+        #         bbox.final[2] - bbox.final[0],
+        #         bbox.final[3] - bbox.final[1],
+        #         edgecolor='red', facecolor='none', linewidth=1.0
+        #     )
+        #     self.subplot.add_patch(rect)
 
-        for seg in self.getLoaded().segment:
-            y, x = np.where(seg._segment__data.T > 0)
-            self.subplot.scatter(x, y, s=0.5, c='orange', marker='.', linewidths=0)
+        # for seg in self.getLoaded().segment:
+        #     y, x = np.where(seg._segment__data.T > 0)
+        #     self.subplot.scatter(x, y, s=0.5, c='orange', marker='.', linewidths=0)
             
-        bbox_list = self.getLoaded().bbox
-        centers = [((b.final[0]+b.final[2])/2, (b.final[1]+b.final[3])/2) for b in bbox_list]
-        for center in centers:
-            self.subplot.add_patch(Circle(center, radius=10, edgecolor='lightgreen', facecolor='lightgreen'))
+        # bbox_list = self.getLoaded().bbox
+        # centers = [((b.final[0]+b.final[2])/2, (b.final[1]+b.final[3])/2) for b in bbox_list]
+        # for center in centers:
+        #     self.subplot.add_patch(Circle(center, radius=10, edgecolor='blue', facecolor='blue'))
 
         self.canvas.draw()
 
@@ -849,16 +849,27 @@ class abstract():
         self.gui = gui
 
         self.__img_np_stack = tifffile.imread(self.__abs_path)
-        if self.__img_np_stack.ndim != 3 or self.__img_np_stack.shape[0] != 3:
+
+        if self.__img_np_stack.ndim == 2 or self.__img_np_stack.shape[0] == 2:
+            print("Green and DAPI Channels")
+            cyto2_index = -1
+            nuc_index = 1
+
+        elif self.__img_np_stack.ndim == 3 or self.__img_np_stack.shape[0] == 3:
+            print("Red, Green, and DAPI Channels")
+            cyto2_index = 1
+            nuc_index = 2
+
+        else:
             raise ValueError(
                 f"Expected a 3-channel TIF with shape (3, H, W), but got shape {self.__img_np_stack.shape} from {self.__abs_path.name}"
             )
 
-        nucleus = self.__img_np_stack[2]
-        cyto1 = self.__img_np_stack[0]
-        cyto2 = self.__img_np_stack[1]
+        nucleus = self.__img_np_stack[nuc_index]
+        cyto1 = self.__img_np_stack[0] # Always will be 0
+        cyto2 = self.__img_np_stack[cyto2_index] if (cyto2_index != -1) else -1 # Equal to -1 in cases of 2 channels
         cyto1 = cv2.normalize(cyto1, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-        cyto2 = cv2.normalize(cyto2, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+        cyto2 = cv2.normalize(cyto2, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8) if (cyto2_index != -1) else -1
         nucleus = cv2.normalize(nucleus, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
         self.__img_np_nucleus = nucleus
         self.__img_np_cyto1 = cyto1 # May use it in future
