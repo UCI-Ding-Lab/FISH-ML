@@ -1205,7 +1205,7 @@ class abstract():
 # Watershed Segmentation Logic
 # --------------------------------------
     @staticmethod
-    def clahe(img, clip_limit=2.0, tile_size=(8, 8)):
+    def clahe(img, clip_limit=4.0, tile_size=(8, 8)):
         c = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_size)
         return c.apply(img)
 
