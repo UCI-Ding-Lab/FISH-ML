@@ -878,10 +878,10 @@ class abstract():
         self.__img_np_nucleus = nucleus
         self.__img_np_cyto1 = cyto1 
         self.__img_np_cyto2 = cyto2
-        self.__cyt_clahe = cyto1 # Handle case when only green and DAPI
+        self.__cyt_clahe = cyto1 # TODO Handle case when only green and DAPI
         
         self.__img_np_rgb1 = self.grayscale_to_rgb(self.__img_np_cyto1)
-        # self.__img_np_rgb2 = self.grayscale_to_rgb(self.__img_np_cyto2) # Handle case when there's only green and DAPI
+        # self.__img_np_rgb2 = self.grayscale_to_rgb(self.__img_np_cyto2) # TODO Handle case when there's only green and DAPI
         self.__img_pil_thumbnail = Image.fromarray(self.__img_np_rgb1).resize((64, 64))
         self.__img_tk_thumbnail = ImageTk.PhotoImage(self.__img_pil_thumbnail)
         
@@ -1191,7 +1191,7 @@ class abstract():
     def getImgNumpyGreyscale(self) -> np.ndarray:
         return self.__img_np_nucleus
     def getImgNumpyRGB(self) -> np.ndarray:
-        return self.__img_np_rgb1 # Handle when there is only green and DAPI
+        return self.__img_np_rgb1 # TODO Handle when there is only green and DAPI
     def getLabel(self) -> tkinter.Label:
         return self.__label
     def getAbsPath(self) -> pathlib.Path:
