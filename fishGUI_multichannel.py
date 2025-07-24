@@ -21,6 +21,10 @@ import cv2
 import sl
 import matPacker
 import tifffile 
+from skimage import filters, morphology, measure, segmentation
+from scipy import ndimage as ndi
+
+
 
 class FishToolBar(NavigationToolbar2Tk):
     def __init__(self, canvas, window, gui: FishGUI):
@@ -868,15 +872,17 @@ class abstract():
         nucleus = self.__img_np_stack[nuc_index]
         cyto1 = self.__img_np_stack[0] # Always will be 0
         cyto2 = self.__img_np_stack[cyto2_index] if (cyto2_index != -1) else -1 # Equal to -1 in cases of 2 channels
-        cyto1 = cv2.normalize(cyto1, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-        cyto2 = cv2.normalize(cyto2, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8) if (cyto2_index != -1) else -1
-        nucleus = cv2.normalize(nucleus, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+        cyto1 = abstract.clahe(abstract.normalize_to_uint8(cyto1))
+        cyto2 = abstract.clahe(abstract.normalize_to_uint8(cyto2)) if cyto2_index != -1 else None
+        nucleus = abstract.clahe(nucleus)
         self.__img_np_nucleus = nucleus
-        self.__img_np_cyto1 = cyto1 # May use it in future
+        self.__img_np_cyto1 = cyto1 
         self.__img_np_cyto2 = cyto2
+        self.__cyt_clahe = cyto1 # Handle case when only green and DAPI
         
-        self.__img_np_rgb = self.grayscale_to_rgb(self.__img_np_cyto1)
-        self.__img_pil_thumbnail = Image.fromarray(self.__img_np_rgb).resize((64, 64))
+        self.__img_np_rgb1 = self.grayscale_to_rgb(self.__img_np_cyto1)
+        # self.__img_np_rgb2 = self.grayscale_to_rgb(self.__img_np_cyto2) # Handle case when there's only green and DAPI
+        self.__img_pil_thumbnail = Image.fromarray(self.__img_np_rgb1).resize((64, 64))
         self.__img_tk_thumbnail = ImageTk.PhotoImage(self.__img_pil_thumbnail)
         
         self.__label = tkinter.Label(gallery_frame,
@@ -909,26 +915,44 @@ class abstract():
 
         abstract.addToPool(self)
         
+    # @property
+    # def segment(self) -> list[segment]:
+        # def job():
+        #     bbox_nucleus = self.gui.getBackEnd().AppIntDINOwrapper(self.__img_np_nucleus)
+        #     centers = [((b[0] + b[2]) / 2, (b[1] + b[3]) / 2) for b in bbox_nucleus]
+        #     bbox_cyto = self.gui.getBackEnd().AppIntDINOwrapperB(self.__img_np_cyto1, centers)
+        #     masks: np.ndarray = self.gui.getBackEnd().finetune.AppIntPREDICTwrapper(self.__img_np_cyto1, bbox_cyto)
+        #     for m in masks:
+        #         self.__seg.append(segment(self.gui, m))
+        #     self.segment_generated = True
+        #     self.gui.getRoot().after(0, self.gui.dismissWait)
+            
+        # if not self.segment_generated:
+        #     self.gui.indicateWait("Segmentation")
+        #     self.gui.getRoot().update_idletasks()
+        #     t = threading.Thread(target=job, daemon=True)
+        #     t.start()
+        #     while not self.segment_generated: time.sleep(0.1)
+        
+        # return self.__seg
     @property
     def segment(self) -> list[segment]:
         def job():
-            bbox_nucleus = self.gui.getBackEnd().AppIntDINOwrapper(self.__img_np_nucleus)
-            centers = [((b[0] + b[2]) / 2, (b[1] + b[3]) / 2) for b in bbox_nucleus]
-            bbox_cyto = self.gui.getBackEnd().AppIntDINOwrapperB(self.__img_np_cyto1, centers)
-            masks: np.ndarray = self.gui.getBackEnd().finetune.AppIntPREDICTwrapper(self.__img_np_cyto1, bbox_cyto)
-            for m in masks:
-                self.__seg.append(segment(self.gui, m))
+            self.run_basic_watershed()  
             self.segment_generated = True
             self.gui.getRoot().after(0, self.gui.dismissWait)
-            
+
         if not self.segment_generated:
             self.gui.indicateWait("Segmentation")
             self.gui.getRoot().update_idletasks()
             t = threading.Thread(target=job, daemon=True)
             t.start()
-            while not self.segment_generated: time.sleep(0.1)
-        
+            while not self.segment_generated:
+                time.sleep(0.1)
+
         return self.__seg
+
+
     @segment.setter
     def segment(self, value: list[segment]):
         self.__seg = value
@@ -1167,7 +1191,7 @@ class abstract():
     def getImgNumpyGreyscale(self) -> np.ndarray:
         return self.__img_np_nucleus
     def getImgNumpyRGB(self) -> np.ndarray:
-        return self.__img_np_rgb
+        return self.__img_np_rgb1 # Handle when there is only green and DAPI
     def getLabel(self) -> tkinter.Label:
         return self.__label
     def getAbsPath(self) -> pathlib.Path:
@@ -1177,6 +1201,70 @@ class abstract():
     def noSegment(self) -> bool:
         return not len(self.__seg)
 
+# --------------------------------------
+# Watershed Segmentation Logic
+# --------------------------------------
+    @staticmethod
+    def clahe(img, clip_limit=2.0, tile_size=(8, 8)):
+        c = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_size)
+        return c.apply(img)
+
+    @staticmethod
+    def normalize_to_uint8(img):
+        return cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+
+    @staticmethod
+    def postproc_mask(m):
+        m = morphology.remove_small_objects(m.astype(bool), min_size=200)
+        m = morphology.binary_opening(m, footprint=morphology.disk(2))
+        return m.astype(np.uint8)
+
+    @staticmethod
+    def watershed_segment(cyt_img: np.ndarray,
+                           centers: list[tuple[float, float]],
+                           thresh_method: str = "otsu",
+                           min_size: int = 300) -> list[np.ndarray]:
+        if thresh_method == "otsu":
+            thresh = filters.threshold_otsu(cyt_img)
+        else:
+            thresh = np.percentile(cyt_img, 30)
+
+        binary = cyt_img > thresh
+        binary = morphology.remove_small_holes(binary, area_threshold=1000)
+        binary = morphology.remove_small_objects(binary, min_size=1000)
+        dist = ndi.distance_transform_edt(binary)
+
+        markers = np.zeros(cyt_img.shape, dtype=np.int32)
+        for idx, (cx, cy) in enumerate(centers, start=1):
+            xi, yi = int(round(cx)), int(round(cy))
+            if 0 <= yi < cyt_img.shape[0] and 0 <= xi < cyt_img.shape[1]:
+                markers[yi, xi] = idx
+
+        labels = segmentation.watershed(-dist, markers, mask=binary)
+        masks = []
+        for i in range(1, len(centers)+1):
+            cell = (labels == i)
+            cell = abstract.postproc_mask(cell)
+            masks.append(cell)
+        return masks
+
+    def run_basic_watershed(self):
+        self.__seg = []
+        self.__segment_generated = False
+        nucleus = self.__img_np_nucleus
+        bbox_nucleus = self.gui.getBackEnd().AppIntDINOwrapper(nucleus)
+        centers = [((x1 + x2) / 2, (y1 + y2) / 2) for x1, y1, x2, y2 in bbox_nucleus]
+
+        masks = abstract.watershed_segment(self.__cyt_clahe, centers)
+        for m in masks:
+            if m.sum() > 0:
+                self.__seg.append(segment(self.gui, m))  
+        
+        print(f"  → Created {len(masks)} raw masks, appended {len(self.__seg)} segment objects")
+        for idx, seg_obj in enumerate(self.__seg, start=1):
+            print(f"    Mask #{idx}: shape={seg_obj._segment__data.shape}, "
+                f"sum(pixels)={(seg_obj._segment__data>0).sum()}")
+            
 class tifSequence():
     def __init__(self, gui: FishGUI):
         self.gui = gui
