@@ -925,50 +925,39 @@ class abstract():
                     gallery_frame,
                     gui: FishGUI):
             self.gui = gui
+            self.sample_id   = sample_id
             self.__abs_path = nucleus_path
+            self.__cyto_paths = cyto_paths
 
-            # load & reduce DAPI stack
-            nuc = tifffile.imread(nucleus_path)               
-            nuc = project_stack_to_2d(nuc, method="max")      
-            nuc = abstract.normalize_to_uint8(nuc)
-            nuc = abstract.clahe(nuc)
-            self.__img_np_nucleus = nuc
+            nuc_stack = tifffile.imread(nucleus_path)
+            self.__img_np_nucleus = abstract.preprocess_nucleus_stack(nuc_stack)
 
-            # load & reduce cytoplasm channel 1
-            if len(cyto_paths) >= 1:
-                c1 = tifffile.imread(cyto_paths[0])
-                c1 = project_stack_to_2d(c1, method="max")
-                c1 = abstract.normalize_to_uint8(c1)
-                c1 = abstract.clahe(c1)
-                self.__img_np_cyto1 = c1
-            else:
-                self.__img_np_cyto1 = None
+            # load & reduce cytoplasm channels by filename (647 vs 488)
+            self.__img_np_647 = None
+            self.__img_np_488 = None
+            for p in cyto_paths:
+                stack = tifffile.imread(p)
+                zprojected = abstract.preprocess_cytoplasm_stack(stack, top_n=8)
+                stem = p.stem.lower()
+                if "647" in stem:
+                    self.__img_np_647 = zprojected
+                elif "488" in stem:
+                    self.__img_np_488 = zprojected
+                else:
+                    logger.warning(f"Unrecognized cytoplasm channel in file {p.name}")
+            self.__img_np_cyto1 = self.__img_np_647
+            self.__img_np_cyto2 = self.__img_np_488
 
-            # load & reduce cytoplasm channel 2
-            if len(cyto_paths) >= 2:
-                c2 = tifffile.imread(cyto_paths[1])
-                c2 = project_stack_to_2d(c2, method="max")
-                c2 = abstract.normalize_to_uint8(c2)
-                c2 = abstract.clahe(c2)
-                self.__img_np_cyto2 = c2
-            else:
-                self.__img_np_cyto2 = None
-            
-            self.__cyt_clahe = (
-                self.__img_np_cyto1
-                if self.__img_np_cyto1 is not None
-                else self.__img_np_cyto2
-            )
-
+                
             # build thumbnail (cyto1 if exists, else nucleus)
             thumbnail_img = None
-            for p in cyto_paths:
-                if "647" in p.name.upper():
-                    thumbnail_img = tifffile.imread(p)
-                    thumbnail_img = abstract.clahe(abstract.normalize_to_uint8(thumbnail_img))
-                    break
-            if thumbnail_img is None:
-                thumbnail_img = self.__img_np_cyto1 if self.__img_np_cyto1 is not None else self.__img_np_nucleus
+            # build thumbnail: reuse the pre-computed cytoplasm image if available, else nucleus
+            if self.__img_np_cyto1 is not None:
+                thumbnail_img = self.__img_np_cyto1
+            elif self.__img_np_cyto2 is not None:
+                thumbnail_img = self.__img_np_cyto2
+            else:
+                thumbnail_img = self.__img_np_nucleus
 
             rgb = abstract.grayscale_to_rgb(thumbnail_img)
             self.__img_np_rgb1 = rgb
@@ -1301,12 +1290,7 @@ class abstract():
     def clahe(img, clip_limit=4.0, tile_size=(8, 8)):
         c = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_size)
         return c.apply(img)
-        
-    @staticmethod
-    def gradient(img: np.ndarray, ksize: int = 5) -> np.ndarray:
-        kern = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ksize, ksize))
-        return cv2.morphologyEx(img, cv2.MORPH_GRADIENT, kern)
-
+    
     @staticmethod
     def normalize_to_uint8(img):
         return cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
@@ -1317,6 +1301,32 @@ class abstract():
         m = morphology.binary_opening(m, footprint=morphology.disk(2))
         return m.astype(np.uint8)
     
+    def mask_to_bbox(mask):
+        ys, xs = np.where(mask)
+        if len(xs) == 0 or len(ys) == 0:
+            return None
+        return (xs.min(), ys.min(), xs.max(), ys.max())
+    # --------------------------------------
+    # Stack-projection helpers
+    # --------------------------------------
+
+    # TODO : delete if zprojection is applied
+    def preprocess_nucleus_stack(stack: np.ndarray) -> np.ndarray:
+        stack = stack[np.any(stack > 0, axis=(1, 2))]
+        # max projection
+        proj = np.max(stack, axis=0)
+        return cv2.normalize(proj, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+
+    # TODO : delete if zprojection is applied
+    def preprocess_cytoplasm_stack(stack: np.ndarray, top_n: int = 8) -> np.ndarray:
+        stack = stack[np.any(stack > 0, axis=(1, 2))]
+        scores = [cv2.Laplacian(s, cv2.CV_64F).var() for s in stack]
+        best_z = np.argsort(scores)[-top_n:]
+        best_z.sort()
+        proj = np.max(stack[best_z], axis=0)
+        proj_u8 = cv2.normalize(proj, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+        return cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8)).apply(proj_u8)
+
     def watershed_segment_with_centers(cyt_img: np.ndarray,
                                   centers: list[tuple[float,float]]
                                  ) -> list[np.ndarray]:
@@ -1378,30 +1388,56 @@ class abstract():
         # 1) get nucleus boxes & compute centers
         nuc = self.__img_np_nucleus
         boxes = self.gui.getBackEnd().AppIntDINOwrapper(nuc)
-        centers = [((x0+x1)/2, (y0+y1)/2) for x0,y0,x1,y1 in boxes]
+        centers = [((x0 + x1) / 2, (y0 + y1) / 2) for x0, y0, x1, y1 in boxes]
 
-        # 2) prepare a “SAM‐friendly” cytoplasm image (CLAHE + gradient stacked)
-        cyt   = self.__cyt_clahe
-        grad  = abstract.gradient(cyt, ksize=5)
-        cyt_rgb = np.stack([cyt, cyt, grad], axis=-1)
+        final_masks = []
 
-        # 3) classical watershed → rough masks
-        ws_masks = abstract.watershed_segment_with_centers(cyt, centers)
-        bboxes   = [abstract.mask_to_bbox(m) for m in ws_masks]
-        bboxes   = [b for b in bboxes if b is not None]
+        # process 647 first (cyto1), then 488 (cyto2)
+        for raw, chan in [(self.__img_np_cyto1, "647"),
+                        (self.__img_np_cyto2, "488")]:
+            if raw is None:
+                continue
 
-        # 4) refine with your SAM finetune wrapper
-        sam_sets = self.gui.getBackEnd().finetune.AppIntPREDICTCytoplasmWrapper(cyt_rgb, bboxes)
+            img = abstract.normalize_to_uint8(raw)
 
-        # 5) pick largest mask per proposal
-        self.__seg = []
-        for mset in sam_sets:
-            areas = [m.sum() for m in mset]
-            best  = mset[np.argmax(areas)]
-            self.__seg.append(segment(self.gui, abstract.postproc_mask(best)))
+            if chan == "647":
+                # 647 pipeline: CLAHE + gradient
+                clahe = abstract.clahe(img, clip_limit=2.0, tile_size=(8,8))
+                grad  = abstract.gradient(clahe, ksize=5)
+                proc = clahe
+                rgb  = np.stack([clahe, clahe, grad], axis=-1)
 
+            else:  # chan == "488"
+                # 488 pipeline: CLAHE → bilateral → edge-preserving
+                clahe = abstract.clahe(img, clip_limit=4.0, tile_size=(8,8))
+                bilat = cv2.bilateralFilter(clahe, d=9, sigmaColor=30, sigmaSpace=15,
+                                            borderType=cv2.BORDER_REFLECT_101)
+                edgep = cv2.edgePreservingFilter(bilat, flags=1, sigma_s=25, sigma_r=0.4)
+                proc  = edgep
+                # use same edge-preserved for G and B channels
+                rgb   = np.stack([clahe, edgep, edgep], axis=-1)
+
+            # 2) classical watershed to get rough masks
+            ws_masks = abstract.watershed_segment_with_centers(proc, centers)
+
+            # 3) convert to bboxes and refine with SAM
+            bboxes = [abstract.mask_to_bbox(m) for m in ws_masks]
+            bboxes = [b for b in bboxes if b is not None]
+
+            for bb in bboxes:
+                try:
+                    sets = self.gui.getBackEnd().finetune.AppIntPREDICTCytoplasmWrapper(rgb, [bb])
+                    if sets and sets[0]:
+                        best = max(sets[0], key=lambda m: m.sum())
+                        final_masks.append(abstract.postproc_mask(best))
+                except Exception as e:
+                    logger.error(f"SAM refine failed on {chan} box {bb}: {e}")
+
+        # 4) wrap up
+        self.__seg = [segment(self.gui, m) for m in final_masks]
         self.__segment_generated = True
-        print(f"→ Produced {len(self.__seg)} final segments")
+        logger.info(f"Generated {len(self.__seg)} final segments (647+488)")
+
 
 
     # def run_basic_watershed(self):
@@ -1467,8 +1503,16 @@ class tifSequence():
 
         for path in tif_files:
             stem = path.stem
-            pos = re.search(r"s(\d+)", stem, re.IGNORECASE)
-            chan = re.search(r"w(\d{3}|DAPI)", stem, re.IGNORECASE)
+            pos = re.search(r"s(\d{1,4})", stem, re.IGNORECASE)
+            chan = re.search(r"w[-_]?(?:.*?)?(DAPI|488|647)", stem, re.IGNORECASE)
+            if not (pos and chan):
+                logger.warning(f"addToGallery → skipping {stem!r}, couldn’t parse s### or w###")
+                continue
+
+            logger.debug(f"addToGallery → considering file {stem!r}: "
+                        f"pos_match={pos.group(1) if pos else None}, "
+                        f"chan_match={(chan.group(1).upper() if chan else None)}")
+
             if not (pos and chan):
                 logger.warning(f"addToGallery → skipping {stem!r}, couldn’t parse s### or w###")
                 continue
@@ -1486,7 +1530,7 @@ class tifSequence():
                 logger.warning(f"addToGallery → sample {sample_id} has no DAPI, skipping")
                 continue
 
-            cyto_paths = []
+            cyto_paths: list[pathlib.Path] = []
             if "647" in channels:
                 cyto_paths.append(channels["647"])
             if "488" in channels:
@@ -1665,6 +1709,7 @@ class funcButton():
             self.gui.getTifSequence().resetPosition()
             for abs in abstract.getPool():
                 abs.thumbnail = "bbox" if abs.bbox_generated else "default"
+
     
     def BBOX_call(self):
         if not self.gui.getStove().isLoaded():
@@ -1746,7 +1791,7 @@ class FishGUI(object):
         try:
             self.__root: tkinter.Tk = root
             self.__root.title("FISH UI Multichannel Prototype")
-            self.__root.geometry("870x1000") # Shizuka
+            self.__root.geometry("870x1000") 
 
             print("Creating backend")
             self.__be: fishCore.Fish = fishCore.Fish(pathlib.Path("./config.ini"))
@@ -1827,4 +1872,5 @@ if __name__ == "__main__":
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     root = tkinter.Tk()
     app = FishGUI(root)
+    root.mainloop()
     root.mainloop()
