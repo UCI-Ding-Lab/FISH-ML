@@ -364,42 +364,40 @@ class Fish():
             else:
                 raise ValueError(f"[CYTO] Invalid image format: expected (H,W) or (H,W,3), got {img.shape}")
 
-            centers = np.array([[(b[0] + b[2]) / 2, (b[1] + b[3]) / 2] for b in bboxes])
-            labels  = np.ones(len(centers), dtype=int)
-            all_masks = []
-            self.fish.model.eval()
+            # Process boxes one at a time
+            final_masks = []
+            for box in bboxes:
+                print(f"[CYTO] Processing box {box}")
 
-            for idx, (box, point, label) in enumerate(zip(bboxes, centers, labels)):
-                print(f"[CYTO] Cell {idx}: box={box}, point={point.tolist()}")
-
+                # Prepare SAM inputs for single box
                 inputs = self.fish.processor(
                     images=img_rgb,
-                    input_boxes=[[box]],           
-                    input_points=[[point.tolist()]],
-                    input_labels=[[int(label)]],   
+                    input_boxes=[[box]],  # Single box at a time
                     return_tensors="pt",
                     multimask_output=True
                 ).to(self.fish.device)
 
+                # Generate masks
+                self.fish.model.eval()
                 with torch.no_grad():
                     outputs = self.fish.model(**inputs)
 
-                # yields a list of 3 masks per box: shape (3, H, W)
-                candidates = self.fish.processor.image_processor.post_process_masks(
+                # Post-process masks
+                masks = self.fish.processor.image_processor.post_process_masks(
                     masks=outputs.pred_masks.cpu(),
                     original_sizes=inputs["original_sizes"].cpu(),
                     reshaped_input_sizes=inputs["reshaped_input_sizes"].cpu(),
                     mask_threshold=float(self.fish.config["predict"]["mask_threshold"])
                 )[0]
 
-                # pick the largest-area mask
-                areas     = [(m > 0).sum() for m in candidates]
-                best_mask = candidates[np.argmax(areas)].numpy().astype(np.uint8)
-                all_masks.append(best_mask)
+                # Select best mask (largest area)
+                if len(masks) > 0:
+                    areas = [(m.numpy() > 0).sum() for m in masks]
+                    best_idx = np.argmax(areas)
+                    best_mask = masks[best_idx].numpy().astype(np.uint8)
+                    final_masks.append(best_mask)
 
-            print(f"[CYTO] Completed segmentation for {len(all_masks)} cells")
-
-            return np.stack(all_masks, axis=0)
+            return np.array(final_masks) if final_masks else np.array([])
 
 
                     
@@ -408,4 +406,4 @@ class Fish():
         
         def AppIntPREDICTCytoplasmWrapper(self, img: np.ndarray, bbox: list[list]=None) -> np.ndarray:
             return self.predict_cytoplasm(img, bbox)
-        
+ 
