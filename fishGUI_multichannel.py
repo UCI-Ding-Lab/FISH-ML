@@ -1346,8 +1346,6 @@ class abstract():
         boxes = self.gui.getBackEnd().AppIntDINOwrapper(nuc)
         centers = [((x0 + x1) / 2, (y0 + y1) / 2) for x0, y0, x1, y1 in boxes]
 
-        final_masks = []
-
         # process 647 first (cyto1), then 488 (cyto2)
         for raw, chan in [(self.__img_np_cyto1, "647"),
                         (self.__img_np_cyto2, "488")]:
@@ -1364,39 +1362,24 @@ class abstract():
                 rgb  = np.stack([clahe, clahe, grad], axis=-1)
 
             else:  # chan == "488"
-                img_uint8 = abstract.normalize_to_uint8(raw)
-                clahe    = abstract.clahe(img_uint8, clip_limit=4.0, tile_size=(8,8))
+                ch = abstract.normalize_to_uint8(raw)
+                cyt_clahe    = abstract.clahe(ch, clip_limit=5.0, tile_size=(8,8))
 
-                # 2) estimate noise sigma
-                sigma_est = estimate_sigma(clahe, channel_axis=None, average_sigmas=True)
+                sigma_est = estimate_sigma(cyt_clahe, channel_axis=None, average_sigmas=True)
                 sigma_norm = sigma_est + 3.0
-                sigma_weak = max(sigma_est - 10.0, 1.0)
+                sigma_weak = sigma_est - 10.0
 
-                # 3) bilateral + edge-preserving
-                bilat = cv2.bilateralFilter(clahe, d=9,
-                                            sigmaColor=sigma_norm,
-                                            sigmaSpace=15,
-                                            borderType=cv2.BORDER_REFLECT_101)
-                edgep = cv2.edgePreservingFilter(clahe,
-                                                flags=1,
-                                                sigma_s=sigma_norm,
-                                                sigma_r=0.4)
-                bilat_edge = cv2.edgePreservingFilter(bilat,
-                                                    flags=1,
-                                                    sigma_s=sigma_weak,
-                                                    sigma_r=0.4)
+                cyt_bilat = cv2.bilateralFilter(cyt_clahe, d=9, sigmaColor=sigma_norm, sigmaSpace=15, borderType=cv2.BORDER_REFLECT_101)
+                cyt_edge_preserved = cv2.edgePreservingFilter(cyt_clahe, flags=1, sigma_s=sigma_norm, sigma_r=0.4)
+                cyt_bilat_edge = cv2.edgePreservingFilter(cyt_bilat, flags=1, sigma_s=sigma_weak, sigma_r=0.4)
 
-                # 4) Laplacian blend
-                lap = cv2.convertScaleAbs(cv2.Laplacian(img_uint8, cv2.CV_64F))
-                blended = cv2.addWeighted(bilat, 0.8, lap, 0.2, 0)
+                laplacian = cv2.Laplacian(ch, cv2.CV_64F)
+                laplacian = cv2.convertScaleAbs(laplacian)
+                cyt_blended = cv2.addWeighted(cyt_bilat, 0.8, laplacian, 0.2, 0)
 
                 # 5) choose which pre-proc to feed to watershed
-                proc = blended  # or bilat_edge, clahe, etc.
-                rgb  = np.stack([blended, bilat, edgep], axis=-1)
-
-                # 5) choose which pre-proc to feed to watershed
-                proc = blended  # or bilat_edge, clahe, etc.
-                rgb  = np.stack([blended, bilat, edgep], axis=-1)
+                proc = cyt_bilat_edge
+                rgb  = np.stack([cyt_blended, cyt_bilat, cyt_edge_preserved], axis=-1)
 
             # 2) classical watershed to get rough masks
             ws_masks = abstract.watershed_segment_with_centers(proc, centers)
