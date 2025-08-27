@@ -1,4 +1,3 @@
-# fishgui/app.py
 import configparser
 import pathlib
 import os
@@ -15,15 +14,10 @@ logging.basicConfig(
 # --- GUI pieces ---
 from .gui.frames import lf
 from .gui.canvas_view import stove
-from .gui.tools_pannel import seasoning    # (keep file name as you have it)
+from .gui.tools_pannel import seasoning    
 from .gui.buttons import funcButton
 from .gui.thumbnails import tifSequence
-
-# --- Model root import is NOT needed here; GUI files import model themselves
-# --- Services are called from the GUI files (Progress, etc.)
-
-# Your backend (fishCore.py) should expose class Fish with a .config dict
-import fishCore  # stays at repo root next to FISH-ML code
+import fishCore 
 
 
 class FishGUI:
@@ -33,26 +27,22 @@ class FishGUI:
         self._root.geometry("870x1000")
         os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
-        # --- backend (SAM / DINO wrappers, config incl. icon_folder) ---
+        # set config path
         proj_root = pathlib.Path(__file__).resolve().parents[1]
-
-        # Find config.ini file (match the working multichannel version)
         config_path = None
         candidates = [
             proj_root / "config.ini",
             pathlib.Path.cwd() / "config.ini",
         ]
-        
-        for p in candidates:
-            if p.exists():
-                config_path = p
+        for path in candidates:
+            if path.exists():
+                config_path = path
                 break
-        
         if not config_path:
             messagebox.showerror("Config Error", "config.ini not found!")
             raise FileNotFoundError("config.ini not found")
 
-        # Instantiate backend with config file path (like multichannel version)
+        # Instantiate backend with config file path 
         try:
             self._backend = fishCore.Fish(config_path)
             self._backend.set_model_version("3.50")
@@ -60,17 +50,12 @@ class FishGUI:
             messagebox.showerror("Config Error", f"Failed to initialize backend: {e}")
             raise
 
-        # --- layout frames (A,B,C) ---
-        self._lower = lf(self)
-        self._lower.pack()
-
-        # --- widgets ---
+        self._layout = lf(self)
+        self._layout.pack()
         self._stove = stove(self)
         self._thumbs = tifSequence(self)
         self._buttons = funcButton(self)
         self._seasoning = seasoning(self)
-
-        # --- pack order mirrors original UI ---
         self._stove.pack()
         self._thumbs.pack()
         self._buttons.pack()

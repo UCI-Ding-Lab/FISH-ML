@@ -52,14 +52,21 @@ class abstract():
         self.__abs_path = nucleus_path
         self.__cyto_paths = cyto_paths
 
-        nuc_stack = tifffile.imread(nucleus_path)
-        self.__img_np_nucleus = abstract.preprocess_nucleus_stack(nuc_stack)
+        nuc_arr = tifffile.imread(nucleus_path)
+        if nuc_arr.ndim == 3 and nuc_arr.shape[0] > 1:   
+            self.__img_np_nucleus = abstract.preprocess_nucleus_stack(nuc_arr)
+        else:                                             
+            self.__img_np_nucleus = abstract.normalize_to_uint8(np.squeeze(nuc_arr)) # already z-projected
 
         self.__img_np_647 = None
         self.__img_np_488 = None
         for p in cyto_paths:
-            stack = tifffile.imread(p)
-            zprojected = abstract.preprocess_cytoplasm_stack(stack, top_n=8)
+            arr = tifffile.imread(p)
+            if arr.ndim == 3 and arr.shape[0] > 1:      
+                zprojected = abstract.preprocess_cytoplasm_stack(arr, top_n=8)
+            else:                                        
+                zprojected = abstract.normalize_to_uint8(np.squeeze(arr))
+            
             stem = p.stem.lower()
             if "647" in stem:
                 self.__img_np_647 = zprojected
