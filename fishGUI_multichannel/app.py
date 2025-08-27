@@ -50,8 +50,8 @@ class FishGUI:
             messagebox.showerror("Config Error", f"Failed to initialize backend: {e}")
             raise
 
-        self._layout = lf(self)
-        self._layout.pack()
+        self._lower = lf(self)
+        self._lower.pack()
         self._stove = stove(self)
         self._thumbs = tifSequence(self)
         self._buttons = funcButton(self)
