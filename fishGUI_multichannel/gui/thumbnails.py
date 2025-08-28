@@ -12,6 +12,7 @@ from scipy import ndimage as ndi
 import re
 import logging
 from skimage.restoration import estimate_sigma
+from .canvas_view import box, segment
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)-8s %(message)s",
@@ -249,46 +250,23 @@ class abstract():
         self.__bbox = value
         self.bbox_generated = True if value else False
 
-    # ...existing code for properties and methods from multichannel version...
-    
     def on_click(self, event):
         self.gui.getStove().bufferSetCurrent(3)       
         self.gui.getStove().dump()
         b = abstract.getBuffer()
-        if b: 
-            try:
-                del b.highlighted
-            except:
-                pass
+        if b: del b.highlighted
         self.highlighted = "red"
-        
         if self.gui.getFuncButton().selectButtonPressed():
             self.selected = not self.selected
-        else:
-            # When not in select mode, clear previous buffer's drawings
-            if b and b != self:
-                try:
-                    b.drawBbox = False
-                    b.drawSegmentation = False
-                except:
-                    pass
-            
-            # Set current buffer and apply current mode settings
-            abstract.setBuffer(self)
-            
-            # Apply bbox drawing if bbox mode is active
-            if self.gui.getFuncButton().bboxButtonPressed():
-                from .canvas_view import box
-                box.clearBufferAndDeselect()  # Clear any selected boxes
-                self.drawBbox = True
-                
-            # Apply segmentation drawing if segment mode is active
-            if self.gui.getFuncButton().segButtonPressed():
-                from .canvas_view import segment
-                segment.clearBufferAndDeselect()  # Clear any selected segments
-                self.drawSegmentation = True
-        
-        # Always cook the image last
+        elif self.gui.getFuncButton().bboxButtonPressed():
+            buffer = box.getBuffer()
+            if buffer: buffer.selected = False
+            if b: b.drawBbox = False
+            self.drawBbox = True
+        elif self.gui.getFuncButton().segButtonPressed():
+            if b: b.drawSegmentation = False
+            self.drawSegmentation = True
+        abstract.setBuffer(self)
         self.gui.getStove().cook(self)
 
     # Add all other methods from multichannel version...
