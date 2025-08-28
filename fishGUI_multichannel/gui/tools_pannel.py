@@ -3,8 +3,8 @@ import tkinter
 import pathlib
 import threading
 from PIL import Image, ImageTk
-from ..model.shapes import box
 from ..services.progress import Progress
+from .thumbnails import abstract as GUIAbstract
 
 class seasoning():
     def __init__(self, gui):
@@ -152,58 +152,28 @@ class seasoning():
         box.setBuffer(new_box)
         self.gui.getStove().canvas.draw()
 
+
     def SAVEPROG_CALL(self):
-        from .thumbnails import abstract
-        self.gui.indicateWait("Pkl save")
+        self.gui.indicateWait("Saving")
         def job():
             try:
-                from tkinter import filedialog
-                import pickle
-                f = filedialog.asksaveasfilename(defaultextension=".pkl", 
-                                               filetypes=[("Pickle files", "*.pkl")],
-                                               title="Save Session As")
-                if f:
-                    b = abstract.grabPool()
-                    with open(f, "wb") as file:
-                        pickle.dump(b, file)
-                    self.gui.popBox("i", "Done", "Session saved as " + f)
+                Progress.save(abstract_cls=GUIAbstract)
+                self.gui.popBox("i", "Done", "Session saved.")
             except Exception as e:
-                self.gui.popBox("e", "Save Error", f"Failed to save: {e}")
+                self.gui.popBox("e", "Save Error", str(e))
             finally:
                 self.gui.getRoot().after(0, self.gui.dismissWait)
-        
-        import threading
         threading.Thread(target=job, daemon=True).start()
-    
+
     def LOADPROG_CALL(self):
-        from .thumbnails import abstract
-        self.gui.indicateWait("Pkl load")
+        self.gui.indicateWait("Loading")
         def job():
             try:
-                from tkinter import filedialog
-                import pickle
-                import pathlib
-                f = filedialog.askopenfilename(filetypes=[("Progress files", "*.pkl")])
-                if f:
-                    with open(f, "rb") as file:
-                        data = pickle.load(file)
-                    abstract.getPool().clear()
-                    for bundle in data:
-                        path, bbox_data, seg_data = bundle
-                        if not pathlib.Path(path).exists():
-                            self.gui.popBox("w", "Warning", f"Image {path} not found!")
-                            continue
-                        from .canvas_view import box, segment
-                        abs_obj = abstract(pathlib.Path(path), self.gui.getTifSequence().gallery_frame, self.gui)
-                        abs_obj.bbox = [box(each, self.gui) for each in bbox_data]
-                        abs_obj.segment = [segment(self.gui, segm) for segm in seg_data]
-                    abstract.sendFirst()
+                Progress.load(self.gui, abstract_cls=GUIAbstract, abstract_ctor=GUIAbstract)
             except Exception as e:
-                self.gui.popBox("e", "Load Error", f"Failed to load session: {e}")
+                self.gui.popBox("e", "Load Error", str(e))
             finally:
                 self.gui.getRoot().after(0, self.gui.dismissWait)
-        
-        import threading
         threading.Thread(target=job, daemon=True).start()
 
     def on_channel_change(self, new_chan: str):

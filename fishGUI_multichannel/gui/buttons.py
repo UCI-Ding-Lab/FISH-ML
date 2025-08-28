@@ -1,4 +1,3 @@
-# fishgui/gui/buttons.py
 import tkinter
 import pathlib
 from tkinter import filedialog

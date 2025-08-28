@@ -4,6 +4,7 @@ import numpy as np
 
 def clahe(img, clip_limit=4.0, tile_size=(8, 8)):
     c = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_size)
+    print("debugging clahe!!!!!!!!!!")
     return c.apply(img)
 
 def normalize_to_uint8(img):

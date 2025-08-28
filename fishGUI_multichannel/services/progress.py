@@ -1,54 +1,116 @@
-# fishgui/services/progress.py
 import pathlib, pickle, threading, concurrent.futures, time
 from tkinter import filedialog, messagebox
-from ..model.abstract import abstract
-from ..model.shapes import box
-from ..model.segment import segment
-import matPacker  # keep as in your project
+import matPacker
+import re
+from ..gui.thumbnails import abstract
+from ..gui.canvas_view import box, segment
+
+def _parse_sample_id(path: pathlib.Path) -> str:
+    m = re.search(r"s(\d{1,4})", path.stem, re.IGNORECASE)
+    return m.group(1) if m else ""
 
 class Progress:
     @staticmethod
     def save(abstract_cls=abstract):
-        """Serialize the current pool as a simple, portable list of dicts."""
         f = filedialog.asksaveasfilename(defaultextension=".pkl",
                                          filetypes=[("Pickle files", "*.pkl")],
                                          title="Save Session As")
         if not f:
             return
-        data = []
-        for a in abstract_cls.getPool():
-            item = {
-                "path": str(a.getAbsPath()),
-                "bbox": [b.final for b in a.bbox] if not a.noBbox() else [],
-                "seg":  [s._data.T for s in a.segment] if not a.noSegment() else [],
-            }
-            data.append(item)
-        with open(f, "wb") as file:
-            pickle.dump(data, file)
-        messagebox.showinfo("Done", "Session saved as " + f)
+        data = abstract_cls.grabPool()        
+        with open(f, "wb") as fh:
+            pickle.dump(data, fh)
+        messagebox.showinfo("Done", f"Session saved as {f}")
 
     @staticmethod
     def load(gui, abstract_cls=abstract, abstract_ctor=abstract):
-        """Restore from the list-of-dicts we save above."""
         f = filedialog.askopenfilename(filetypes=[("Progress files", "*.pkl")])
         if not f:
             return
+
         try:
-            with open(f, "rb") as file:
-                data = pickle.load(file)
-            abstract_cls.getPool().clear()
-            for item in data:
-                p = pathlib.Path(item["path"])
-                if not p.exists():
-                    messagebox.showwarning("Warning", f"Image {p} not found!")
-                    continue
-                abs_obj = abstract_ctor(p, gui.getTifSequence().gallery_frame, gui)
-                # Rebuild objects
-                abs_obj.bbox = [box(b, gui) for b in item.get("bbox", [])]
-                abs_obj.segment = [segment(gui, m) for m in item.get("seg", [])]
-            abstract_cls.sendFirst()
+            with open(f, "rb") as fh:
+                data = pickle.load(fh)
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to load session: {e}")
+            messagebox.showerror("Error", f"Could not read {f}:\n{e}")
+            return
+
+        abstract_cls.getPool().clear()
+
+        def make_abs(nucleus: pathlib.Path, cyto_paths, sample_id: str):
+            return abstract_ctor(sample_id, nucleus, cyto_paths,
+                                gui.getTifSequence().gallery_frame, gui)
+
+        for item in data:
+            try:
+                if isinstance(item, dict) and "nucleus" in item:
+                    nucleus = pathlib.Path(item["nucleus"])
+                    if not nucleus.exists():
+                        messagebox.showwarning("Missing file",
+                                            f"Nucleus image not found:\n{nucleus}")
+                        continue
+
+                    cyto_all = item.get("cyto", [])
+                    cyto_paths = [pathlib.Path(p) for p in cyto_all if pathlib.Path(p).exists()]
+                    missing = [p for p in cyto_all if not pathlib.Path(p).exists()]
+                    if missing:
+                        messagebox.showwarning("Some files missing",
+                                            "Skipped missing cyto files:\n" + "\n".join(missing))
+
+                    sample_id = item.get("sample_id") or _parse_sample_id(nucleus)
+                    abs_obj = make_abs(nucleus, cyto_paths, sample_id)
+
+                    # restore bbox (no generation)
+                    abs_obj.bbox = [box(b, gui) for b in item.get("bbox", [])]
+
+                    # restore per-channel seg caches (don’t call abs_obj.segment)
+                    seg_by_channel = item.get("seg_by_channel", {})
+                    seg_647 = [segment(gui, m) for m in seg_by_channel.get("647", [])]
+                    seg_488 = [segment(gui, m) for m in seg_by_channel.get("488", [])]
+                    setattr(abs_obj, "_abstract__seg_647", seg_647)
+                    setattr(abs_obj, "_abstract__seg_488", seg_488)
+
+                    # set the active list to the saved/available channel
+                    sel = item.get("selected_channel")
+                    if sel == "647" and seg_647:
+                        abs_obj.segment = seg_647
+                    elif sel == "488" and seg_488:
+                        abs_obj.segment = seg_488
+                    elif seg_647:  # fallback if nothing saved
+                        abs_obj.segment = seg_647
+                    elif seg_488:
+                        abs_obj.segment = seg_488
+                    continue
+
+                if isinstance(item, dict) and "path" in item:
+                    nucleus = pathlib.Path(item["path"])
+                    if not nucleus.exists():
+                        messagebox.showwarning("Missing file", f"Image not found:\n{nucleus}")
+                        continue
+                    abs_obj = make_abs(nucleus, [], _parse_sample_id(nucleus))
+                    abs_obj.bbox = [box(b, gui) for b in item.get("bbox", [])]
+                    if item.get("seg"):
+                        abs_obj.segment = [segment(gui, m) for m in item["seg"]]
+                    continue
+
+                if hasattr(item, "L"):
+                    path, bbox_list, seg_list = item.L()
+                    nucleus = pathlib.Path(path)
+                    if not nucleus.exists():
+                        messagebox.showwarning("Missing file", f"Image not found:\n{nucleus}")
+                        continue
+                    abs_obj = make_abs(nucleus, [], _parse_sample_id(nucleus))
+                    abs_obj.bbox = [box(b, gui) for b in (bbox_list or [])]
+                    if seg_list:
+                        abs_obj.segment = [segment(gui, m) for m in seg_list]
+                    continue
+
+                messagebox.showwarning("Unrecognized entry", f"Skipping unsupported item: {type(item)}")
+
+            except Exception as e:
+                messagebox.showwarning("Skipped one row", f"Reason: {e}")
+
+        abstract_cls.sendFirst()
 
     @staticmethod
     def export(gui):

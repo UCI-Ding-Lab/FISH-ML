@@ -50,7 +50,7 @@ class abstract():
     ):
         self.gui = gui
         self.sample_id = sample_id
-        self.__abs_path = nucleus_path
+        self.__nucleus_path = nucleus_path
         self.__cyto_paths = cyto_paths
 
         nuc_arr = tifffile.imread(nucleus_path)
@@ -269,7 +269,6 @@ class abstract():
         abstract.setBuffer(self)
         self.gui.getStove().cook(self)
 
-    # Add all other methods from multichannel version...
     @classmethod
     def sendFirst(cls):
         for target in cls.getPool():
@@ -303,30 +302,47 @@ class abstract():
         current = cls.getBuffer()
         if current: current.on_click(None)
         else: cls.sendFirst()
-
     @classmethod
     def saveBboxChanges(cls):
-        # This method is no longer needed since we handle mode changes directly
-        pass
-    
+        cls.getBuffer().drawBbox = False
+        cls.sendFocused()
     @classmethod
     def saveSegChanges(cls):
-        # This method is no longer needed since we handle mode changes directly
-        pass
+        cls.getBuffer().drawSegmentation = False
+        cls.sendFocused()
 
     @classmethod
     def grabPool(cls):
-        result = []
-        for abs in cls.getPool():
-            if abs.selected:
-                # Create bundle-like object with path, bbox, and segment data
-                bbox_data = [b.final for b in abs.bbox] if abs.bbox else []
-                seg_data = [s._segment__data.T for s in abs.segmentExplict] if abs.segmentExplict else []
-                # Simple tuple structure: (path, bbox_list, seg_list)
-                bundle = (str(abs.getAbsPath()), bbox_data, seg_data)
-                result.append(bundle)
-        return result
+        data = []
+        for a in cls.getPool():
+            if not getattr(a, "selected", True):
+                continue
 
+            if getattr(a, "bbox_generated", False):
+                try:
+                    bbox_list = [b.final for b in a.bbox]
+                except Exception:
+                    bbox_list = []
+            else:
+                bbox_list = []
+                
+            seg_by_channel = {}
+            seg647 = getattr(a, "_abstract__seg_647", None)
+            seg488 = getattr(a, "_abstract__seg_488", None)
+            if seg647:
+                seg_by_channel["647"] = [s._segment__data.T for s in seg647]
+            if seg488:
+                seg_by_channel["488"] = [s._segment__data.T for s in seg488]
+
+            data.append({
+                "sample_id": getattr(a, "sample_id", ""),
+                "nucleus": str(a.getNucleusPath()),
+                "cyto": [str(p) for p in a.getCytoplasmPaths()],
+                "selected_channel": getattr(a, "selected_channel", None),
+                "bbox": bbox_list,
+                "seg_by_channel": seg_by_channel,
+            })
+        return data
     @staticmethod
     def grayscale_to_rgb(grayscale_img) -> np.ndarray:
         img_normalized = cv2.normalize(grayscale_img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
@@ -510,8 +526,10 @@ class abstract():
 
     def getLabel(self) -> tkinter.Label:
         return self.__label
-    def getAbsPath(self) -> pathlib.Path:
-        return self.__abs_path
+    def getNucleusPath(self) -> pathlib.Path:
+        return self.__nucleus_path
+    def getCytoplasmPaths(self) -> tuple[pathlib.Path, ...]:
+        return tuple(self.__cyto_paths)
 
     @property
     def highlighted(self) -> str:
@@ -578,21 +596,9 @@ class abstract():
         return self.__drawSeg
     @drawSegmentation.setter
     def drawSegmentation(self, value: bool):
-        try:
-            segments = self.segment  # This will trigger creation if not already done
-            print(f"Setting drawSegmentation={value} for {len(segments)} segments")
-            for i, s in enumerate(segments):
-                try:
-                    print(f"  Setting segment {i+1} draw={value}")
-                    s.draw = value
-                except Exception as e:
-                    print(f"Error setting segment {i+1} draw: {e}")
-                    continue
-            # Force canvas redraw after setting all segments
-            if segments:
-                self.gui.getStove().canvas.draw()
-        except Exception as e:
-            print(f"Error in drawSegmentation setter: {e}")
+        segments = self.segment
+        for s in segments:
+            s.draw = True if value else False
         self.__drawSeg = value
 
     def findBoxFromPoint(self, x: float, y: float):
@@ -687,5 +693,3 @@ class tifSequence():
 
         abstract.sendFirst()
         self.update_scrollregion()
-
-    # ...existing code...

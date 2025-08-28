@@ -1,4 +1,3 @@
-#fishgui/gui/toolbar.py
 from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
 
 class FishToolBar(NavigationToolbar2Tk):

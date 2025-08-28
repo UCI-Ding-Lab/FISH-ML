@@ -1,4 +1,3 @@
-# fishgui/gui/canvas_view.py
 import tkinter
 import numpy as np
 from matplotlib.figure import Figure 
@@ -99,10 +98,8 @@ class segment():
             return
         try:
             if value:
-                # Always try to add the patch if we want to draw
                 self.gui.getStove().subplot.add_patch(self.patch)
             else:
-                # Try to remove the patch
                 try:
                     self.__patch.remove()
                 except (NotImplementedError, ValueError, AttributeError):
@@ -114,7 +111,6 @@ class segment():
             print(f"Error in segment draw setter: {e}")
         
         self.__draw = value
-        # Force canvas redraw
         self.gui.getStove().canvas.draw()
 
     def contains(self, x: float, y: float) -> bool:

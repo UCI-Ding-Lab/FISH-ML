@@ -1,4 +1,3 @@
-# fishgui/gui/frames.py
 import tkinter
 
 class lf():
