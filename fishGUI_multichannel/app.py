@@ -133,7 +133,7 @@ class FishGUI:
         else:
             self.popBox('w', 'No Selection', 'No bounding box or segmentation mask is selected.')
 
-#to run the app: python -m fishgui.app
+#to run the app: python -m fishGUI_multichannel.app
 def main():
     root = tk.Tk()
     app = FishGUI(root)

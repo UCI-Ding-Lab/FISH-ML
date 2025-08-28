@@ -1269,9 +1269,38 @@ class abstract():
     # Watershed Segmentation Logic
     # --------------------------------------
     @staticmethod
-    def gradient(img: np.ndarray, ksize: int = 5) -> np.ndarray:
-        kern = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ksize, ksize))
-        return cv2.morphologyEx(img, cv2.MORPH_GRADIENT, kern)
+    def remove_outliers(img, k=20.0, use_median=False):
+        """
+        Clip values that are more than k std-dev (or MAD units) above center.
+        Args:
+            img: 16-bit numpy array
+            k: threshold (e.g. 3σ)
+            use_median: if True use median+MAD, else mean+std
+        Returns:
+            clipped float32 image in [0,1]
+        """
+        x = img.astype(np.float32)
+
+        if use_median:
+            med = np.median(x)
+            mad = np.median(np.abs(x - med)) + 1e-6
+            sigma = 1.4826 * mad  # robust std estimate
+            thresh = med + k * sigma
+        else:
+            mean = np.mean(x)
+            std = np.std(x)
+            thresh = mean + k * std
+
+        # clip outliers
+        x_clipped = np.minimum(x, thresh)
+
+        # normalize after clipping (to 0..1)
+        x_norm = (x_clipped - x_clipped.min()) / (x_clipped.max() - x_clipped.min() + 1e-6)
+        return x_norm
+
+    @staticmethod
+    def normalize_to_uint8(img):
+        return cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
     
     @staticmethod
     def clahe(img, clip_limit=4.0, tile_size=(8, 8)):
@@ -1279,8 +1308,9 @@ class abstract():
         return c.apply(img)
     
     @staticmethod
-    def normalize_to_uint8(img):
-        return cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    def gradient(img: np.ndarray, ksize: int = 5) -> np.ndarray:
+        kern = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ksize, ksize))
+        return cv2.morphologyEx(img, cv2.MORPH_GRADIENT, kern)
 
     @staticmethod
     def postproc_mask(m):
@@ -1363,7 +1393,7 @@ class abstract():
 
             else:  # chan == "488"
                 ch = abstract.normalize_to_uint8(raw)
-                cyt_clahe    = abstract.clahe(ch, clip_limit=5.0, tile_size=(8,8))
+                cyt_clahe    = abstract.clahe(ch, clip_limit=4.0, tile_size=(8,8))
 
                 sigma_est = estimate_sigma(cyt_clahe, channel_axis=None, average_sigmas=True)
                 sigma_norm = sigma_est + 3.0
