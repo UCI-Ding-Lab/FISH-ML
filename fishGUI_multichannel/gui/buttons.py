@@ -1,6 +1,7 @@
 import tkinter
 import pathlib
 from tkinter import filedialog
+import tkinter as tk
 import threading
 import concurrent.futures
 import time
@@ -69,6 +70,12 @@ class funcButton():
                                     offvalue=0,
                                     indicatoron=False,
                                     command=self.EXPORT_call)
+        self.APPLY_MASK = tkinter.Button(container,
+                                 text="Apply Channel Mask",
+                                 height=2,
+                                 relief=tkinter.RAISED,
+                                 command=self.APPLY_MASK_call)
+        self.APPLY_MASK.pack(side=tkinter.LEFT, expand=True, fill=tkinter.X)
     
     def pack(self):
         self.IMPORT.pack(side=tkinter.LEFT, expand=True, fill=tkinter.X)
@@ -203,6 +210,79 @@ class funcButton():
                 self.gui.popBox("e", "Export Error", f"Failed to export: {e}")
             finally:
                 self.gui.getRoot().after(0, self.gui.dismissWait)
+
+    def APPLY_MASK_call(self):
+        from .thumbnails import abstract
+
+        available_channels = ["488", "647"]
+        def channel_callback(selected_channel):
+            frame_names = [a.sample_id for a in abstract.getPool()]
+            def frame_callback(selection):
+                pool = abstract.getPool()
+                if selection == "all":
+                    frames_sel = "all"
+                elif selection == "next5":
+                    idx = pool.index(abstract.getBuffer())
+                    frames_sel = range(idx, min(idx+5, len(pool)))
+                else:
+                    frames_sel = "all"
+                abstract.apply_channel_mask_to_frames(
+                    source_ch=selected_channel,
+                    frames_sel=frames_sel,
+                    targets_sel="all_channels"
+                )
+            FrameSelectPopup(self.gui.getRoot(), frame_names, frame_callback)
+        ChannelSelectPopup(self.gui.getRoot(), available_channels, channel_callback)
         
-        import threading
-        threading.Thread(target=job, daemon=True).start()
+
+class ChannelSelectPopup(tk.Toplevel):
+    def __init__(self, parent, available_channels, callback):
+        super().__init__(parent)
+        self.title("Select Channel Mask")
+        self.callback = callback
+        self.selected_channel = tk.StringVar(value=available_channels[0])
+
+        tk.Label(self, text="Which channel mask do you want to apply for current frame?\n(Chosen channel mask will apply to all channels)").pack(pady=10)
+
+        frame = tk.Frame(self)
+        frame.pack(pady=10)
+        for ch in available_channels:
+            tk.Radiobutton(frame, text=f"Channel {ch}", variable=self.selected_channel, value=ch).pack(side=tk.LEFT, padx=20)
+
+        tk.Button(self, text="Next", command=self.on_next).pack(pady=10)
+
+    def on_next(self):
+        self.callback(self.selected_channel.get())
+        self.destroy()
+
+class FrameSelectPopup(tk.Toplevel):
+    def __init__(self, parent, frame_names, callback):
+        super().__init__(parent)
+        self.title("Apply Mask To Frames")
+        self.callback = callback
+        self.selection = tk.StringVar(value="all")
+
+        tk.Label(self, text="How many more frames would you like to add channel masks?").pack(pady=10)
+
+        canvas = tk.Canvas(self, height=120)
+        scrollbar = tk.Scrollbar(self, orient="horizontal", command=canvas.xview)
+        canvas.configure(xscrollcommand=scrollbar.set)
+        frame = tk.Frame(canvas)
+        canvas.create_window((0,0), window=frame, anchor="nw")
+        canvas.pack(fill="x")
+        scrollbar.pack(fill="x")
+
+        for name in frame_names:
+            tk.Label(frame, text=name, relief=tk.RIDGE, width=18).pack(side=tk.LEFT, padx=2, pady=2)
+
+        frame.update_idletasks()
+        canvas.config(scrollregion=canvas.bbox("all"))
+
+        tk.Radiobutton(self, text="Select Next 5", variable=self.selection, value="next5").pack(anchor="w", padx=20)
+        tk.Radiobutton(self, text="Select All Frames", variable=self.selection, value="all").pack(anchor="w", padx=20)
+
+        tk.Button(self, text="Finish & Apply", command=self.on_apply).pack(pady=10)
+
+    def on_apply(self):
+        self.callback(self.selection.get())
+        self.destroy()

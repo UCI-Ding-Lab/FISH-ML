@@ -139,6 +139,10 @@ class abstract():
         self.__seg_647 = []
         self.__seg_488 = []
 
+        self.__img_pil_thumbnail_select_bbox = None
+        self.__img_tk_thumbnail_select_bbox = None
+
+
         abstract.addToPool(self)
 
     def get_cyto1(self) -> np.ndarray:
@@ -200,11 +204,21 @@ class abstract():
                 self.__img_tk_thumbnail_bbox = ImageTk.PhotoImage(self.__img_pil_thumbnail_bbox)
             self.getLabel().config(image=self.__img_tk_thumbnail_bbox)
         elif value == "selected":
-            if not self.__img_tk_thumbnail_select:
-                self.__img_pil_thumbnail_select = self.__img_pil_thumbnail.copy()
-                ImageDraw.Draw(self.__img_pil_thumbnail_select).ellipse((5, 5, 15, 15), fill=(0,255,0))
-                self.__img_tk_thumbnail_select = ImageTk.PhotoImage(self.__img_pil_thumbnail_select)
-            self.getLabel().config(image=self.__img_tk_thumbnail_select)
+            if self.bbox_generated:
+                if not self.__img_tk_thumbnail_select_bbox:
+                    img = self.__img_pil_thumbnail.copy()
+                    draw = ImageDraw.Draw(img)
+                    draw.ellipse((49, 5, 59, 15), fill=(0,0,255))  # blue circle
+                    draw.ellipse((5, 5, 15, 15), fill=(0,255,0))    # green dot
+                    self.__img_tk_thumbnail_select_bbox = ImageTk.PhotoImage(img)
+                self.getLabel().config(image=self.__img_tk_thumbnail_select_bbox)
+            else:
+                # Only green dot
+                if not self.__img_tk_thumbnail_select:
+                    self.__img_pil_thumbnail_select = self.__img_pil_thumbnail.copy()
+                    ImageDraw.Draw(self.__img_pil_thumbnail_select).ellipse((5, 5, 15, 15), fill=(0,255,0))
+                    self.__img_tk_thumbnail_select = ImageTk.PhotoImage(self.__img_pil_thumbnail_select)
+                self.getLabel().config(image=self.__img_tk_thumbnail_select)
         elif value == "crossout":
             if not self.__img_tk_thumbnail_crossout:
                 self.__img_pil_thumbnail_crossout = self.__img_pil_thumbnail.copy()
@@ -213,11 +227,20 @@ class abstract():
                 self.__img_tk_thumbnail_crossout = ImageTk.PhotoImage(self.__img_pil_thumbnail_crossout)
             self.getLabel().config(image=self.__img_tk_thumbnail_crossout)
         elif value == "segmented":
-            if not self.__img_tk_thumbnail_segmented:
-                self.__img_pil_thumbnail_segmented = self.__img_pil_thumbnail_bbox.copy()
-                ImageDraw.Draw(self.__img_pil_thumbnail_segmented).ellipse((49, 20, 59, 30), fill=(255, 165, 0))
-                self.__img_tk_thumbnail_segmented = ImageTk.PhotoImage(self.__img_pil_thumbnail_segmented)
+            if self.__img_tk_thumbnail_segmented is None:
+                # Ensure we have a bbox base image first
+                if self.__img_pil_thumbnail_bbox is None:
+                    base = self.__img_pil_thumbnail.copy()
+                    ImageDraw.Draw(base).ellipse((49, 5, 59, 15), fill=(0,0,255))
+                    self.__img_pil_thumbnail_bbox = base.copy()
+                    self.__img_tk_thumbnail_bbox = ImageTk.PhotoImage(self.__img_pil_thumbnail_bbox)
+                # Now build the segmented variant
+                seg_img = self.__img_pil_thumbnail_bbox.copy()
+                ImageDraw.Draw(seg_img).ellipse((49, 20, 59, 30), fill=(255, 165, 0))
+                self.__img_pil_thumbnail_segmented = seg_img
+                self.__img_tk_thumbnail_segmented = ImageTk.PhotoImage(seg_img)
             self.getLabel().config(image=self.__img_tk_thumbnail_segmented)
+
     @thumbnail.deleter
     def thumbnail(self):
         self.getLabel().pack_forget()
@@ -228,6 +251,9 @@ class abstract():
     @selected.setter
     def selected(self, value: bool):
         if value:
+            if not self.bbox_generated:
+                self.gui.popBox("w", "BBOX Not Ready", "Bounding boxes for this image have not been generated yet.")
+                return
             self.thumbnail = "selected"
             self.__selected = True
         else:
@@ -272,6 +298,52 @@ class abstract():
     
     def on_multi_toggle(self, event):
         self.selected = not self.selected
+
+    def _get_seg_list_for_channel(self, ch: str):
+        if ch == "647": return getattr(self, "_abstract__seg_647", [])
+        if ch == "488": return getattr(self, "_abstract__seg_488", [])
+        return []
+
+    def _set_seg_list_for_channel(self, ch: str, seg_objs: list):
+        if ch == "647": setattr(self, "_abstract__seg_647", seg_objs)
+        elif ch == "488": setattr(self, "_abstract__seg_488", seg_objs)
+
+    def apply_source_to_target_channel(self, source_ch: str, target_ch: str):
+        from .canvas_view import segment as Seg
+        src_list = self._get_seg_list_for_channel(source_ch)
+        new_targets = []
+        for s in src_list:
+            try:
+                m = s._segment__data.copy()
+            except Exception:
+                continue
+            new_targets.append(Seg(self.gui, m))
+        self._set_seg_list_for_channel(target_ch, new_targets)
+
+    @classmethod
+    def apply_channel_mask_to_frames(cls, source_ch: str, frames_sel, targets_sel):
+        pool = cls.getPool()
+        idxs = range(len(pool)) if frames_sel == "all" else sorted(list(frames_sel))
+
+        def _targets_for(a):
+            if targets_sel == "all_channels":
+                return list(getattr(a, "available_channels", [])) or ["647", "488"]
+            return list(targets_sel)
+
+        for i in idxs:
+            a = pool[i]
+            # Ensure source masks exist on this frame
+            if not a._get_seg_list_for_channel(source_ch):
+                old = getattr(a, "selected_channel", None)
+                a.selected_channel = source_ch
+                _ = a.segment
+                a.selected_channel = old or source_ch
+
+            # Copy to targets
+            for tgt in _targets_for(a):
+                a.apply_source_to_target_channel(source_ch, tgt)
+            # Keep UI-selected channel list active
+            a._abstract__seg = a._get_seg_list_for_channel(a.selected_channel)
 
     @classmethod
     def sendFirst(cls):
@@ -391,22 +463,18 @@ class abstract():
         selected = [a for a in cls.getPool() if a.selected]
         filenames = [str(a.getNucleusPath().name) for a in selected]
         print(f"Segmenting {len(selected)} images: {filenames}")
-        if len(selected) <= 1:
-            # Only one selected: use original logic (focus and segment)
-            cls.sendFocused()
-        else:
-            # Multiple selected: segment all in parallel
-            def segment_one(abs_obj):
-                for channel in abs_obj.available_channels:
-                    abs_obj.selected_channel = channel
-                    _ = abs_obj.segment  # triggers segmentation for this channel
+        
+        def segment_one(abs_obj):
+            for channel in abs_obj.available_channels:
+                abs_obj.selected_channel = channel
+                _ = abs_obj.segment  # triggers segmentation for this channel
 
-            threads = []
-            for abs_obj in selected:
-                t = threading.Thread(target=segment_one, args=(abs_obj,), daemon=True)
-                t.start()
-                threads.append(t)
-            gui.popBox("i", "Segmentation", f"Started segmentation for {len(selected)} images.")
+        threads = []
+        for abs_obj in selected:
+            t = threading.Thread(target=segment_one, args=(abs_obj,), daemon=True)
+            t.start()
+            threads.append(t)
+        gui.popBox("i", "Segmentation", f"Started segmentation for {len(selected)} images.")
 
     @staticmethod
     def normalize_to_uint8(img):
