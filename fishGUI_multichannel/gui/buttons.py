@@ -75,13 +75,13 @@ class funcButton():
                                  height=2,
                                  relief=tkinter.RAISED,
                                  command=self.APPLY_MASK_call)
-        self.APPLY_MASK.pack(side=tkinter.LEFT, expand=True, fill=tkinter.X)
     
     def pack(self):
         self.IMPORT.pack(side=tkinter.LEFT, expand=True, fill=tkinter.X)
         self.SELECT.pack(side=tkinter.LEFT, expand=True, fill=tkinter.X)
         self.BBOX.pack(side=tkinter.LEFT, expand=True, fill=tkinter.X)
         self.SEGMENT.pack(side=tkinter.LEFT, expand=True, fill=tkinter.X)
+        self.APPLY_MASK.pack(side=tkinter.LEFT, expand=True, fill=tkinter.X)
         self.EXPORT.pack(side=tkinter.LEFT, expand=True, fill=tkinter.X)
     
     def selectButtonPressed(self) -> bool:
@@ -154,11 +154,6 @@ class funcButton():
     
     def SEGMENT_call(self):
         from .thumbnails import abstract
-        if not self.gui.getStove().isLoaded():
-            self.gui.popBox("w", "Image Not Loaded", "Please select an image first")
-            self.toggle["SEGMENT"].set(0)
-            return
-
         selected = [a for a in abstract.getPool() if a.selected]
         if not selected:
             self.gui.popBox("w", "No Image Selected", "Please select an image first")
@@ -210,30 +205,71 @@ class funcButton():
                 self.gui.popBox("e", "Export Error", f"Failed to export: {e}")
             finally:
                 self.gui.getRoot().after(0, self.gui.dismissWait)
-
     def APPLY_MASK_call(self):
         from .thumbnails import abstract
 
         available_channels = ["488", "647"]
+
         def channel_callback(selected_channel):
+            # Quick current-frame sanity check (e.g., Vadym’s frame with no 647)
+            buf = abstract.getBuffer()
+            if buf and selected_channel not in getattr(buf, "available_channels", []):
+                self.gui.popBox("w", "Channel Not Available",
+                                f"Current frame {getattr(buf, 'sample_id', '?')} has no channel {selected_channel}.")
+                return
+
             frame_names = [a.sample_id for a in abstract.getPool()]
+
             def frame_callback(selection):
                 pool = abstract.getPool()
+
+                # Resolve which indices we’ll act on
                 if selection == "all":
+                    idxs = range(len(pool))
                     frames_sel = "all"
                 elif selection == "next5":
-                    idx = pool.index(abstract.getBuffer())
-                    frames_sel = range(idx, min(idx+5, len(pool)))
+                    try:
+                        start = pool.index(abstract.getBuffer())
+                    except ValueError:
+                        start = 0
+                    idxs = range(start, min(start + 5, len(pool)))
+                    frames_sel = idxs
                 else:
+                    # default to all
+                    idxs = range(len(pool))
                     frames_sel = "all"
+
+                # # Validate channel availability across chosen frames
+                # missing = [pool[i].sample_id for i in idxs
+                #         if selected_channel not in getattr(pool[i], "available_channels", [])]
+                # if missing:
+                #     # Warn and abort (don’t flip Segment mode on)
+                #     preview = ", ".join(missing[:5]) + ("..." if len(missing) > 5 else "")
+                #     self.gui.popBox("w", "Channel Not Available",
+                #                     f"Channel {selected_channel} is missing for: {preview}")
+                #     self.toggle["SEGMENT"].set(0)
+                #     return
+
+                # All good → apply masks
                 abstract.apply_channel_mask_to_frames(
+                    gui=self.gui, 
                     source_ch=selected_channel,
                     frames_sel=frames_sel,
                     targets_sel="all_channels"
                 )
+
+                # turn segment mode ON only if current buffer exists, has BBOX, and has masks
+                buf = abstract.getBuffer()
+                if buf and buf.bbox_generated and (buf.segment_generated or buf._get_seg_list_for_channel(buf.selected_channel)):
+                    self.toggle["SEGMENT"].set(1)
+                    buf.drawSegmentation = True
+                else:
+                    self.toggle["SEGMENT"].set(0)
+
             FrameSelectPopup(self.gui.getRoot(), frame_names, frame_callback)
+
         ChannelSelectPopup(self.gui.getRoot(), available_channels, channel_callback)
-        
+
 
 class ChannelSelectPopup(tk.Toplevel):
     def __init__(self, parent, available_channels, callback):

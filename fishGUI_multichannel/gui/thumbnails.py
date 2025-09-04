@@ -153,6 +153,11 @@ class abstract():
 
     @property
     def segment(self) -> list:
+        if not self.bbox_generated:
+            self.gui.popBox("w", "Bounding Boxes Not Ready",
+                            "Please generate BBOX before running segmentation.")
+            return self.__seg
+        
         def job():
             self.run_basic_watershed()  
             self.segment_generated = True
@@ -314,14 +319,14 @@ class abstract():
         new_targets = []
         for s in src_list:
             try:
-                m = s._segment__data.copy()
+                m = s._segment__data.T.copy()
             except Exception:
                 continue
             new_targets.append(Seg(self.gui, m))
         self._set_seg_list_for_channel(target_ch, new_targets)
 
     @classmethod
-    def apply_channel_mask_to_frames(cls, source_ch: str, frames_sel, targets_sel):
+    def apply_channel_mask_to_frames(cls, source_ch: str, frames_sel, targets_sel, gui=None):
         pool = cls.getPool()
         idxs = range(len(pool)) if frames_sel == "all" else sorted(list(frames_sel))
 
@@ -329,9 +334,15 @@ class abstract():
             if targets_sel == "all_channels":
                 return list(getattr(a, "available_channels", [])) or ["647", "488"]
             return list(targets_sel)
-
+        
+        skipped_no_bbox = []
         for i in idxs:
             a = pool[i]
+            # Require BBOX, otherwise just warn & CONTINUE
+            if not a.bbox_generated:
+                skipped_no_bbox.append(getattr(a, "sample_id", f"idx{i}"))
+                continue
+            
             # Ensure source masks exist on this frame
             if not a._get_seg_list_for_channel(source_ch):
                 old = getattr(a, "selected_channel", None)
@@ -344,6 +355,15 @@ class abstract():
                 a.apply_source_to_target_channel(source_ch, tgt)
             # Keep UI-selected channel list active
             a._abstract__seg = a._get_seg_list_for_channel(a.selected_channel)
+
+            # mark segmented only when we actually have masks
+            a.segment_generated = True
+            if a is cls.getBuffer() and a.gui.getFuncButton().segButtonPressed():
+                a.drawSegmentation = True
+
+        if skipped_no_bbox and gui is not None:
+            gui.popBox("w", "Bounding Boxes Not Ready",
+                   "Skipped (no BBOX): " + ", ".join(skipped_no_bbox))
 
     @classmethod
     def sendFirst(cls):
@@ -461,19 +481,49 @@ class abstract():
     @classmethod
     def segment_selected(cls, gui):
         selected = [a for a in cls.getPool() if a.selected]
-        filenames = [str(a.getNucleusPath().name) for a in selected]
-        print(f"Segmenting {len(selected)} images: {filenames}")
-        
+        print(f"Segmenting {len(selected)} images: {[str(a.getNucleusPath().name) for a in selected]}")
+
+        not_ready = [a for a in selected if not a.bbox_generated]
+        if not_ready:
+            names = ", ".join(getattr(a, "sample_id", "?") for a in not_ready)
+            gui.popBox("w", "BBOX Not Ready",
+                       f"Skipping segmentation for: {names} (BBOX still not ready).")
+        ready = [a for a in selected if a.bbox_generated]
+        if not ready:
+            return
+
+        def _ui_show_segmented(a):
+            # remove the green dot (selection) and force orange icon
+            if a.selected:
+                a.selected = False
+            a.thumbnail = "segmented"
+            # if this frame is focused and Segment mode is on, draw masks now
+            if a is cls.getBuffer() and gui.getFuncButton().segButtonPressed():
+                a.drawSegmentation = True
+
         def segment_one(abs_obj):
             for channel in abs_obj.available_channels:
+                # if we ALREADY have masks for this channel, just display them
+                existing = abs_obj._get_seg_list_for_channel(channel)
+                if existing:
+                    abs_obj.selected_channel = channel
+                    abs_obj._abstract__seg = existing
+                    abs_obj.segment_generated = True
+                    # schedule UI updates on the Tk main thread
+                    gui.getRoot().after(0, lambda a=abs_obj: _ui_show_segmented(a))
+                    continue
+
+                # otherwise, run segmentation once
                 abs_obj.selected_channel = channel
-                _ = abs_obj.segment  # triggers segmentation for this channel
+                _ = abs_obj.segment  # this will block until segment_generated = True
+                gui.getRoot().after(0, lambda a=abs_obj: _ui_show_segmented(a))
 
         threads = []
         for abs_obj in selected:
             t = threading.Thread(target=segment_one, args=(abs_obj,), daemon=True)
             t.start()
             threads.append(t)
+
         gui.popBox("i", "Segmentation", f"Started segmentation for {len(selected)} images.")
 
     @staticmethod
@@ -690,10 +740,10 @@ class abstract():
         return self.__drawSeg
     @drawSegmentation.setter
     def drawSegmentation(self, value: bool):
-        segments = self.segment
-        for s in segments:
-            s.draw = True if value else False
-        self.__drawSeg = value
+        segs = self.__seg if self.segment_generated else []
+        for s in segs:
+            s.draw = bool(value)
+        self.__drawSeg = bool(value)
 
     def findBoxFromPoint(self, x: float, y: float):
         for b in self.bbox:
@@ -702,11 +752,13 @@ class abstract():
         return None
 
     def findSegFromPoint(self, x: float, y: float):
-        for s in self.segment:
+        if not self.segment_generated:
+            return None
+        for s in self.__seg:
             if s.contains(x, y):
                 return s
         return None
-
+    
 class tifSequence():
     def __init__(self, gui):
         self.gui = gui
