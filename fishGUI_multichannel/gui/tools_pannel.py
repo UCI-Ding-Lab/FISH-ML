@@ -129,7 +129,7 @@ class seasoning():
     
     def get_marker_size(self) -> int:
         return self.marker_size_var.get()
-    def burshButtonPressed(self) -> bool:
+    def brushButtonPressed(self) -> bool:
         return self.tools_var["brush"].get()
     def eraserButtonPressed(self) -> bool:
         return self.tools_var["eraser"].get()

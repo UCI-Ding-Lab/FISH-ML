@@ -98,7 +98,7 @@ class segment():
             return
         try:
             if value:
-                self.gui.getStove().subplot.add_patch(self.patch)
+                self.gui.getStove().subplot.add_patch(self.patch) # Segment Mode: Adding patch
             else:
                 try:
                     self.__patch.remove()
@@ -254,6 +254,7 @@ class box():
                                 linewidth=float(self.gui.getBackEnd().config["info"]["bbox_preview_line_width"]),
                                 edgecolor='r',
                                 facecolor='none')
+        self.__center = Circle(self.__rect.get_center(), radius=5, color='lime', fill=True)
         self.__anchors = {"bottom-left": anchor(min_x, min_y, gui, self, "bottom-left"),
                           "bottom-right": anchor(max_x, min_y, gui, self, "bottom-right"),
                           "top-left": anchor(min_x, max_y, gui, self, "top-left"),
@@ -265,6 +266,9 @@ class box():
     @property
     def rect(self) -> Rectangle:
         return self.__rect
+    @property
+    def center(self) -> Circle:
+        return self.__center
     @property
     def anchors(self) -> dict[str, anchor]:
         return self.__anchors
@@ -285,6 +289,11 @@ class box():
         self.__selected = value
         self.draw = False
         self.rect.set_edgecolor('cyan' if value else 'r')
+
+        center = self.rect.get_center()
+        print("Calculated Nuc Center:", center, type(center))
+        print("Self.Center:", self.center)
+        
         for _, anchor_obj in self.__anchors.items():
             anchor_obj.draw = value
         canvas = self.gui.getStove().canvas
@@ -292,6 +301,7 @@ class box():
         background = canvas.copy_from_bbox(subplot.bbox)
         canvas.restore_region(background)
         subplot.draw_artist(self.rect)
+        subplot.draw_artist(self.center)
         if self.__selected:
             for anchor_obj in self.__anchors.values():
                 subplot.draw_artist(anchor_obj.patch)
@@ -308,11 +318,18 @@ class box():
             if value:
                 if hasattr(self.gui.getStove().subplot, 'patches') and self.rect not in self.gui.getStove().subplot.patches:
                     self.gui.getStove().subplot.add_patch(self.rect)
+                    nuc_center = Circle(self.rect.get_center(), radius=5, color='lime', fill=True)
+                    print("Calculated Nuc Center:", nuc_center, type(nuc_center))
+                    print("Self.Center:", self.center)
+                    self.gui.getStove().subplot.add_patch(self.center)
             else:
                 if hasattr(self.gui.getStove().subplot, 'patches'):
                     try:
+                        print("Removing rectangle...")
                         self.rect.remove()
+                        self.center.remove()
                     except (NotImplementedError, ValueError):
+                        print("Removing Rectangles EXEMPTION Called...")
                         patches = self.gui.getStove().subplot.patches
                         if self.rect in patches:
                             patches.remove(self.rect)
@@ -370,7 +387,7 @@ class stove():
         self.ax_img = None
         self.figure = Figure(figsize=(3,3), dpi=200)
         self.figure.subplots_adjust(left=0, right=1, top=1, bottom=0)
-        self.subplot = self.figure.add_subplot(111)
+        self.subplot = self.figure.add_subplot(111)  # SELF.SUBPLOT
         self.subplot.set_axis_off()
         self.canvas = FigureCanvasTkAgg(self.figure, self.pit)
         self.canvas.mpl_connect("button_press_event", self.onCanvasClick)
@@ -457,13 +474,14 @@ class stove():
             # Handle BBOX mode interactions
             if self.gui.getFuncButton().bboxButtonPressed():
                 if box.getBuffer() and box.getBuffer().selected:
-                    anchorName = box.getBuffer().anchorContains(event.xdata, event.ydata)
+                    anchorName = box.getBuffer().anchorContains(event.xdata, event.ydata) 
+                    print(anchorName)
                     if anchorName:
                         target = box.getBuffer().anchors[anchorName]
                         target.selected = True
                         anchor.setBuffer(target)
                         return
-                target = self.getLoaded().findBoxFromPoint(event.xdata, event.ydata)
+                target = self.getLoaded().findBoxFromPoint(event.xdata, event.ydata) 
                 box.clearBufferAndDeselect()
                 if target:
                     self.toolbar.deactivate_all_tools()
@@ -474,7 +492,7 @@ class stove():
             # Handle SEGMENT mode interactions (only if not handled by bbox above)
             if self.gui.getFuncButton().segButtonPressed():
                 # Handle brush/eraser tools
-                if self.gui.getSeasoning().burshButtonPressed() and segment.getBuffer() and segment.getBuffer().selected:
+                if self.gui.getSeasoning().brushButtonPressed() and segment.getBuffer() and segment.getBuffer().selected:
                     self.xs = [event.xdata]
                     self.ys = [event.ydata]
                     self.bufferSetCurrent(1)
@@ -503,7 +521,7 @@ class stove():
         if self.gui.getFuncButton().bboxButtonPressed():
             anchor.clearBuffer()
         elif self.gui.getFuncButton().segButtonPressed():
-            if self.gui.getSeasoning().burshButtonPressed() and segment.getBuffer() and segment.getBuffer().selected:
+            if self.gui.getSeasoning().brushButtonPressed() and segment.getBuffer() and segment.getBuffer().selected:
                 final = list(zip(self.xs, self.ys))
                 for marker in self.markers:
                     marker.remove()
@@ -561,6 +579,7 @@ class stove():
             elif a.location == "pos-anchor":
                 dx = event.xdata - (b.rect.get_x() + w/2)
                 dy = event.ydata - (b.rect.get_y() + h)
+                print("pos-anchor", dx, dy)
                 b.rect.set_xy((x0 + dx, y0 + dy))
             
             b.rect.set_width(w)
@@ -570,10 +589,11 @@ class stove():
 
         elif self.gui.getFuncButton().segButtonPressed() and segment.getBuffer() and segment.getBuffer().selected:
             current_x, current_y = event.xdata, event.ydata
+            print("Curr_X, Curr_Y", current_x, current_y)
             if current_x is None or current_y is None: 
                 return
 
-            if self.gui.getSeasoning().burshButtonPressed() or self.gui.getSeasoning().eraserButtonPressed():
+            if self.gui.getSeasoning().brushButtonPressed() or self.gui.getSeasoning().eraserButtonPressed():
                 if self.xs and self.ys:
                     lx, ly = self.xs[-1], self.ys[-1]
                     distance = np.hypot(current_x - lx, current_y - ly)

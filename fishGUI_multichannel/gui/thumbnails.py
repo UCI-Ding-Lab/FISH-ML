@@ -66,13 +66,13 @@ class abstract():
             if arr.ndim == 3 and arr.shape[0] > 1:      
                 zprojected = abstract.preprocess_cytoplasm_stack(arr, top_n=8)
             else:                                        
-                zprojected = abstract.normalize_to_uint8(np.squeeze(arr))
+                zprojected = np.squeeze(arr)
             
             stem = p.stem.lower()
             if "647" in stem:
                 self.__img_np_647 = zprojected
             elif "488" in stem:
-                self.__img_np_488 = zprojected
+                self.__img_np_488 = abstract.normalize_to_uint8(abstract.remove_outliers(zprojected, k=18.0, use_median=False))
             else:
                 logger.warning(f"Unrecognized cytoplasm channel in file {p.name}")
 
