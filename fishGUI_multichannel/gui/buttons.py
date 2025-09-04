@@ -151,19 +151,20 @@ class funcButton():
             self.gui.popBox("w", "Image Not Loaded", "Please select an image first")
             self.toggle["SEGMENT"].set(0)
             return
-        
-        abs = abstract.getBuffer()
-        if not abs:
+
+        selected = [a for a in abstract.getPool() if a.selected]
+        if not selected:
             self.gui.popBox("w", "No Image Selected", "Please select an image first")
             self.toggle["SEGMENT"].set(0)
             return
-            
+
         if self.segButtonPressed():
-            # Entering SEGMENT mode
-            abs.drawSegmentation = True
+            abstract.segment_selected(self.gui)
+            for abs in selected:
+                abs.drawSegmentation = True
         else:
-            # Exiting SEGMENT mode
-            abs.drawSegmentation = False
+            for abs in selected:
+                abs.drawSegmentation = False
     
     def EXPORT_call(self):
         from .thumbnails import abstract

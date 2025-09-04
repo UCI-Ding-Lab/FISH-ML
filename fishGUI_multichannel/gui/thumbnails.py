@@ -114,6 +114,8 @@ class abstract():
                                      relief=tkinter.FLAT, borderwidth=0)
         self.__label.pack(side=tkinter.LEFT, padx=2, pady=2)
         self.__label.bind("<Button-1>", self.on_click)
+        self.__label.bind("<Control-Button-1>", self.on_multi_toggle)
+        self.__label.bind("<Command-Button-1>", self.on_multi_toggle) 
         
         self.__img_pil_thumbnail_bbox = None
         self.__img_pil_thumbnail_select = None
@@ -126,7 +128,7 @@ class abstract():
         self.__thumbnail: str = None
         self.__bbox = []
         self.__highlighted: str = None
-        self.__selected: bool = True
+        self.__selected: bool = False
         self.__drawBbox: bool = False
         self.__seg = []
         self.__drawSeg: bool = False
@@ -229,9 +231,8 @@ class abstract():
             self.thumbnail = "selected"
             self.__selected = True
         else:
-            self.thumbnail = "crossout"
+            self.thumbnail = "default"
             self.__selected = False
-    
     @property
     def bbox(self):
         from .canvas_view import box
@@ -268,6 +269,9 @@ class abstract():
             self.drawSegmentation = True
         abstract.setBuffer(self)
         self.gui.getStove().cook(self)
+    
+    def on_multi_toggle(self, event):
+        self.selected = not self.selected
 
     @classmethod
     def sendFirst(cls):
@@ -381,6 +385,28 @@ class abstract():
         # normalize after clipping (to 0..1)
         x_norm = (x_clipped - x_clipped.min()) / (x_clipped.max() - x_clipped.min() + 1e-6)
         return x_norm
+    
+    @classmethod
+    def segment_selected(cls, gui):
+        selected = [a for a in cls.getPool() if a.selected]
+        filenames = [str(a.getNucleusPath().name) for a in selected]
+        print(f"Segmenting {len(selected)} images: {filenames}")
+        if len(selected) <= 1:
+            # Only one selected: use original logic (focus and segment)
+            cls.sendFocused()
+        else:
+            # Multiple selected: segment all in parallel
+            def segment_one(abs_obj):
+                for channel in abs_obj.available_channels:
+                    abs_obj.selected_channel = channel
+                    _ = abs_obj.segment  # triggers segmentation for this channel
+
+            threads = []
+            for abs_obj in selected:
+                t = threading.Thread(target=segment_one, args=(abs_obj,), daemon=True)
+                t.start()
+                threads.append(t)
+            gui.popBox("i", "Segmentation", f"Started segmentation for {len(selected)} images.")
 
     @staticmethod
     def normalize_to_uint8(img):
