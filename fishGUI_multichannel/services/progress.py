@@ -4,10 +4,9 @@ import matPacker
 import re
 from ..gui.thumbnails import abstract
 from ..gui.canvas_view import box, segment
+import pickle
+import session_loader
 
-def _parse_sample_id(path: pathlib.Path) -> str:
-    m = re.search(r"s(\d{1,4})", path.stem, re.IGNORECASE)
-    return m.group(1) if m else ""
 
 class Progress:
     @staticmethod
@@ -18,119 +17,76 @@ class Progress:
         if not f:
             return
         data = abstract_cls.grabPool()        
-        with open(f, "wb") as fh:
-            pickle.dump(data, fh)
+        with open(f, "wb") as file:
+            pickle.dump(data, file)
         messagebox.showinfo("Done", f"Session saved as {f}")
 
     @staticmethod
-    def load(gui, abstract_cls=abstract, abstract_ctor=abstract):
+    def load(gui, abstract_class=abstract):
         f = filedialog.askopenfilename(filetypes=[("Progress files", "*.pkl")])
         if not f:
             return
-
         try:
-            with open(f, "rb") as fh:
-                data = pickle.load(fh)
+            with open(f, "rb") as file:
+                data = pickle.load(file)
         except Exception as e:
             messagebox.showerror("Error", f"Could not read {f}:\n{e}")
             return
 
-        abstract_cls.getPool().clear()
-
-        def make_abs(nucleus: pathlib.Path, cyto_paths, sample_id: str):
-            return abstract_ctor(sample_id, nucleus, cyto_paths,
-                                gui.getTifSequence().gallery_frame, gui)
-
+        abstract_class.getPool().clear() # ensure that only the data from the loaded session are present 
         for item in data:
             try:
-                if isinstance(item, dict) and "nucleus" in item:
-                    nucleus = pathlib.Path(item["nucleus"])
-                    if not nucleus.exists():
-                        messagebox.showwarning("Missing file",
-                                            f"Nucleus image not found:\n{nucleus}")
-                        continue
-
-                    cyto_all = item.get("cyto", [])
-                    cyto_paths = [pathlib.Path(p) for p in cyto_all if pathlib.Path(p).exists()]
-                    missing = [p for p in cyto_all if not pathlib.Path(p).exists()]
-                    if missing:
-                        messagebox.showwarning("Some files missing",
-                                            "Skipped missing cyto files:\n" + "\n".join(missing))
-
-                    sample_id = item.get("sample_id") or _parse_sample_id(nucleus)
-                    abs_obj = make_abs(nucleus, cyto_paths, sample_id)
-
-                    # restore bbox (no generation)
-                    abs_obj.bbox = [box(b, gui) for b in item.get("bbox", [])]
-
-                    # restore per-channel seg caches (don’t call abs_obj.segment)
-                    seg_by_channel = item.get("seg_by_channel", {})
-                    seg_647 = [segment(gui, m) for m in seg_by_channel.get("647", [])]
-                    seg_488 = [segment(gui, m) for m in seg_by_channel.get("488", [])]
-                    setattr(abs_obj, "_abstract__seg_647", seg_647)
-                    setattr(abs_obj, "_abstract__seg_488", seg_488)
-
-                    # set the active list to the saved/available channel
-                    sel = item.get("selected_channel")
-                    if sel == "647" and seg_647:
-                        abs_obj.segment = seg_647
-                    elif sel == "488" and seg_488:
-                        abs_obj.segment = seg_488
-                    elif seg_647:  # fallback if nothing saved
-                        abs_obj.segment = seg_647
-                    elif seg_488:
-                        abs_obj.segment = seg_488
-                    continue
-
-                if isinstance(item, dict) and "path" in item:
-                    nucleus = pathlib.Path(item["path"])
-                    if not nucleus.exists():
-                        messagebox.showwarning("Missing file", f"Image not found:\n{nucleus}")
-                        continue
-                    abs_obj = make_abs(nucleus, [], _parse_sample_id(nucleus))
-                    abs_obj.bbox = [box(b, gui) for b in item.get("bbox", [])]
-                    if item.get("seg"):
-                        abs_obj.segment = [segment(gui, m) for m in item["seg"]]
-                    continue
-
                 if hasattr(item, "L"):
-                    path, bbox_list, seg_list = item.L()
-                    nucleus = pathlib.Path(path)
-                    if not nucleus.exists():
-                        messagebox.showwarning("Missing file", f"Image not found:\n{nucleus}")
+                    nucleus_path, cyto_paths, bbox_list, seg_list = item.L()
+                    if not nucleus_path.exists():
+                        messagebox.showwarning("Missing file", f"Nucleus image not found:\n{nucleus_path}")
                         continue
-                    abs_obj = make_abs(nucleus, [], _parse_sample_id(nucleus))
-                    abs_obj.bbox = [box(b, gui) for b in (bbox_list or [])]
-                    if seg_list:
-                        abs_obj.segment = [segment(gui, m) for m in seg_list]
-                    continue
-
-                messagebox.showwarning("Unrecognized entry", f"Skipping unsupported item: {type(item)}")
-
+                    missing_cyto = [str(p) for p in cyto_paths if not p.exists()]
+                    if missing_cyto:
+                        messagebox.showwarning("Missing file", f"Cyto image(s) not found:\n" + "\n".join(missing_cyto))
+                    abs_obj = abstract_class(
+                        sample_id=getattr(item, "sample_id", nucleus_path.stem),
+                        nucleus_path=nucleus_path,
+                        cyto_paths=cyto_paths,
+                        gallery_frame=gui.getTifSequence().gallery_frame,
+                        gui=gui
+                    )
+                    abs_obj.bbox = [box(b, gui) for b in (bbox_list or [])] 
+                    abs_obj.segment = [segment(gui, m) for m in seg_list]
+                else:
+                    messagebox.showwarning("Unrecognized entry", f"Skipping unsupported item: {type(item)}")
             except Exception as e:
-                messagebox.showwarning("Skipped one row", f"Reason: {e}")
-
-        abstract_cls.sendFirst()
+                messagebox.showwarning("Skipped one row", f"Reason:{e}")
+        abstract_class.sendFirst()
 
     @staticmethod
-    def export(gui):
-        """Export selected items with explicit segments to MATLAB .mat."""
-        toSave = [a for a in abstract.getPool() if a.selected and len(a.segmentExplict)]
-        if not toSave:
-            messagebox.showwarning("Nothing to export", "No selected images with segments.")
+    def export_finalized_masks(gui, abstract_class=abstract):
+        filename = filedialog.asksaveasfilename(
+            defaultextension=".mat",
+            filetypes=[("Matlab files", "*.mat")],
+            title="Export Finalized Masks As"
+        )
+        if not filename:
+            messagebox.showinfo("Export Cancelled", "No file was selected for export.")
             return
-        f = filedialog.asksaveasfilename(defaultextension=".mat",
-                                         filetypes=[("Matlab files", "*.mat")],
-                                         title="Export Results As")
-        if not f:
-            return
-        names, xys, masks = [], [], []
-        for a in toSave:
-            names.append(str(a.getAbsPath()))
-            xys.append([s.xy for s in a.segment])
-            masks.append([s.box for s in a.segment])
-        matPacker.create(names, xys, masks, f)
 
+        frames_to_export = [
+            frame for frame in abstract_class.getPool()
+            if frame.selected and getattr(frame, "finalized_mask", None)
+        ]
+        if not frames_to_export:
+            messagebox.showinfo("No Data", "No frames are selected or have finalized masks for export.")
+            return
+
+        cytoplasm_filenames = []
+        segmentation_masks = []
+        for frame in frames_to_export:
+            for cytoplasm_path in frame.getCytoplasmPaths():
+                cytoplasm_filenames.append(str(cytoplasm_path))
+                segmentation_masks.append(frame.finalized_mask)
+
+        matPacker.create(cytoplasm_filenames, segmentation_masks, filename)
+        
     @staticmethod
     def generateBbox(gui, abstracts):
         """Kick off background bbox generation for all items in 'abstracts'."""

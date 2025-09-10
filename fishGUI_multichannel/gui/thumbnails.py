@@ -13,6 +13,10 @@ import re
 import logging
 from skimage.restoration import estimate_sigma
 from .canvas_view import box, segment
+from ..services.session_loader import bundle
+from tkinter import messagebox
+from .canvas_view import segment
+from ..services.apply_channel_mask import apply_channel_mask_to_frames
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)-8s %(message)s",
@@ -277,6 +281,13 @@ class abstract():
             self.__bbox = [box(b, self.gui) for b in cyto_boxes]
             self.bbox_generated = True
         return self.__bbox
+    
+    @property
+    def finalized_mask(self):
+        return getattr(self, "_finalized_mask", None)
+    def set_finalized_mask(self, mask_list):
+        self._finalized_mask = mask_list  # mask_list: list of np.ndarray
+
     @bbox.setter
     def bbox(self, value):
         self.__bbox = value
@@ -313,58 +324,10 @@ class abstract():
         if ch == "647": setattr(self, "_abstract__seg_647", seg_objs)
         elif ch == "488": setattr(self, "_abstract__seg_488", seg_objs)
 
-    def apply_source_to_target_channel(self, source_ch: str, target_ch: str):
-        from .canvas_view import segment as Seg
-        src_list = self._get_seg_list_for_channel(source_ch)
-        new_targets = []
-        for s in src_list:
-            try:
-                m = s._segment__data.T.copy()
-            except Exception:
-                continue
-            new_targets.append(Seg(self.gui, m))
-        self._set_seg_list_for_channel(target_ch, new_targets)
-
     @classmethod
-    def apply_channel_mask_to_frames(cls, source_ch: str, frames_sel, targets_sel, gui=None):
-        pool = cls.getPool()
-        idxs = range(len(pool)) if frames_sel == "all" else sorted(list(frames_sel))
-
-        def _targets_for(a):
-            if targets_sel == "all_channels":
-                return list(getattr(a, "available_channels", [])) or ["647", "488"]
-            return list(targets_sel)
-        
-        skipped_no_bbox = []
-        for i in idxs:
-            a = pool[i]
-            # Require BBOX, otherwise just warn & CONTINUE
-            if not a.bbox_generated:
-                skipped_no_bbox.append(getattr(a, "sample_id", f"idx{i}"))
-                continue
-            
-            # Ensure source masks exist on this frame
-            if not a._get_seg_list_for_channel(source_ch):
-                old = getattr(a, "selected_channel", None)
-                a.selected_channel = source_ch
-                _ = a.segment
-                a.selected_channel = old or source_ch
-
-            # Copy to targets
-            for tgt in _targets_for(a):
-                a.apply_source_to_target_channel(source_ch, tgt)
-            # Keep UI-selected channel list active
-            a._abstract__seg = a._get_seg_list_for_channel(a.selected_channel)
-
-            # mark segmented only when we actually have masks
-            a.segment_generated = True
-            if a is cls.getBuffer() and a.gui.getFuncButton().segButtonPressed():
-                a.drawSegmentation = True
-
-        if skipped_no_bbox and gui is not None:
-            gui.popBox("w", "Bounding Boxes Not Ready",
-                   "Skipped (no BBOX): " + ", ".join(skipped_no_bbox))
-
+    def apply_channel_mask_to_frames(cls, source_channel, selected_frames, target_channels, gui=None):
+        apply_channel_mask_to_frames(cls, source_channel, selected_frames, target_channels, gui)
+    
     @classmethod
     def sendFirst(cls):
         for target in cls.getPool():
@@ -409,36 +372,20 @@ class abstract():
 
     @classmethod
     def grabPool(cls):
-        data = []
+        result = []
         for a in cls.getPool():
             if not getattr(a, "selected", True):
                 continue
-
-            if getattr(a, "bbox_generated", False):
-                try:
-                    bbox_list = [b.final for b in a.bbox]
-                except Exception:
-                    bbox_list = []
-            else:
-                bbox_list = []
-                
-            seg_by_channel = {}
-            seg647 = getattr(a, "_abstract__seg_647", None)
-            seg488 = getattr(a, "_abstract__seg_488", None)
-            if seg647:
-                seg_by_channel["647"] = [s._segment__data.T for s in seg647]
-            if seg488:
-                seg_by_channel["488"] = [s._segment__data.T for s in seg488]
-
-            data.append({
-                "sample_id": getattr(a, "sample_id", ""),
-                "nucleus": str(a.getNucleusPath()),
-                "cyto": [str(p) for p in a.getCytoplasmPaths()],
-                "selected_channel": getattr(a, "selected_channel", None),
-                "bbox": bbox_list,
-                "seg_by_channel": seg_by_channel,
-            })
-        return data
+            # Use bundle to store all relevant info
+            b = bundle(
+                nucleus_path=a.getNucleusPath(),
+                cyto_paths=list(a.getCytoplasmPaths()),
+                bbox=a.boundingBoxRevised,
+                segment=a.segmentationRevised
+            )
+            result.append(b)
+        return result
+    
     @staticmethod
     def grayscale_to_rgb(grayscale_img) -> np.ndarray:
         img_normalized = cv2.normalize(grayscale_img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
@@ -502,6 +449,7 @@ class abstract():
                 a.drawSegmentation = True
 
         def segment_one(abs_obj):
+            old_ch = abs_obj.selected_channel
             for channel in abs_obj.available_channels:
                 # if we ALREADY have masks for this channel, just display them
                 existing = abs_obj._get_seg_list_for_channel(channel)

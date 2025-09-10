@@ -168,43 +168,162 @@ class funcButton():
             for abs in selected:
                 abs.drawSegmentation = False
     
+
     def EXPORT_call(self):
         from .thumbnails import abstract
-        if not self.gui.getStove().isLoaded():
+        import threading, time
+        logger.debug("EXPORT_call: invoked")
+
+        # Guardrails + log state
+        is_loaded = self.gui.getStove().isLoaded()
+        bbox_mode = self.bboxButtonPressed()
+        seg_mode  = self.segButtonPressed()
+        logger.debug("EXPORT_call: isLoaded=%s, bboxMode=%s, segMode=%s", is_loaded, bbox_mode, seg_mode)
+
+        if not is_loaded:
+            logger.warning("EXPORT_call: blocked (no image loaded)")
             self.gui.popBox("w", "Image Not Loaded", "Please select an image first")
             self.toggle["EXPORT"].set(0)
             return
-        if self.bboxButtonPressed():
+        if bbox_mode:
+            logger.warning("EXPORT_call: blocked (BBOX mode active)")
             self.gui.popBox("w", "BBOX Mode", "Please exit BBOX mode first")
             self.toggle["EXPORT"].set(0)
             return
-        if self.segButtonPressed():
+        if seg_mode:
+            logger.warning("EXPORT_call: blocked (Segmentation mode active)")
             self.gui.popBox("w", "Segmentation Mode", "Please exit Segmentation mode first")
             self.toggle["EXPORT"].set(0)
             return
-        
-        # Export functionality
+
+        logger.debug("EXPORT_call: indicating wait…")
         self.gui.indicateWait("Dataset conversion")
+
         def job():
+            t0 = time.perf_counter()
+            logger.debug("Export job: thread started")
+
             try:
                 from tkinter import filedialog
-                f = filedialog.asksaveasfilename(defaultextension=".mat", 
-                                               filetypes=[("Matlab files", "*.mat")],
-                                               title="Export Results As")
-                if f:
-                    toSave = [i for i in abstract.getPool() if i.selected and len(i.segmentExplict)]
-                    d = {"name":[],"image":[],"xy":[],"masks":[]}
-                    for abs in toSave:
-                        d["name"].append(str(abs.getAbsPath()))
-                        d["image"].append(abs.getImgNumpyRGB())
-                        d["xy"].append([seg.xy for seg in abs.segment])
-                        d["masks"].append([seg.box for seg in abs.segment])
-                    # Note: You'll need to implement matPacker.create or use scipy.io.savemat
-                    self.gui.popBox("i", "Export", f"Export completed to {f}")
-            except Exception as e:
-                self.gui.popBox("e", "Export Error", f"Failed to export: {e}")
+                logger.debug("Export job: opening save dialog (running from worker thread)")
+                f = filedialog.asksaveasfilename(
+                    defaultextension=".mat",
+                    filetypes=[("Matlab files", "*.mat")],
+                    title="Export Results As"
+                )
+                logger.debug("Export job: save path selected=%r", f)
+
+                if not f:
+                    logger.info("Export job: user cancelled save dialog")
+                    return
+
+                pool = abstract.getPool()
+                selected = [i for i in pool if i.selected]
+                logger.debug("Export job: selected frames=%d -> %s",
+                            len(selected), [getattr(i, 'sample_id', '?') for i in selected])
+
+                toSave = [i for i in selected if len(i.segmentExplict)]
+                logger.debug("Export job: frames with segments=%d", len(toSave))
+
+                d = {"name": [], "image": [], "xy": [], "masks": []}
+
+                for abs in toSave:
+                    try:
+                        name = str(abs.getAbsPath())
+                    except Exception:
+                        name = str(getattr(abs, "sample_id", "unknown"))
+                    try:
+                        img = abs.getImgNumpyRGB()
+                        img_shape = getattr(img, "shape", None)
+                    except Exception as e:
+                        logger.exception("Export job: getImgNumpyRGB failed for %s", name)
+                        img = None
+                        img_shape = None
+
+                    segs = getattr(abs, "segment", [])
+                    logger.debug("Export job: packing %s, img_shape=%s, seg_count=%d",
+                                name, img_shape, len(segs))
+
+                    d["name"].append(name)
+                    d["image"].append(img)
+                    try:
+                        d["xy"].append([seg.xy for seg in segs])
+                    except Exception:
+                        logger.exception("Export job: reading seg.xy failed for %s", name)
+                        d["xy"].append([])
+
+                    try:
+                        # NOTE: your code stores seg.box; logging their shapes can help
+                        boxes = [getattr(seg, "box", None) for seg in segs]
+                        d["masks"].append(boxes)
+                        logger.debug("Export job: appended %d boxes for %s", len(boxes), name)
+                    except Exception:
+                        logger.exception("Export job: reading seg.box failed for %s", name)
+                        d["masks"].append([])
+
+                # TODO: actually write MAT here (matPacker.create or scipy.io.savemat)
+                logger.debug("Export job: data prepared (counts) names=%d, images=%d, xy=%d, masks=%d",
+                            len(d["name"]), len(d["image"]), len(d["xy"]), len(d["masks"]))
+
+                self.gui.getRoot().after(0, lambda: self.gui.popBox("i", "Export", f"Export completed to {f}"))
+
+            except Exception:
+                logger.exception("Export job: failed with exception")
+                self.gui.getRoot().after(0, lambda: self.gui.popBox("e", "Export Error", "See console for details"))
+
             finally:
+                elapsed = time.perf_counter() - t0
+                logger.debug("Export job: finished in %.2fs", elapsed)
                 self.gui.getRoot().after(0, self.gui.dismissWait)
+
+        threading.Thread(target=job, daemon=True, name="ExportThread").start()
+
+    
+    # def EXPORT_call(self):
+    #     from .thumbnails import abstract
+    #     if not self.gui.getStove().isLoaded():
+    #         self.gui.popBox("w", "Image Not Loaded", "Please select an image first")
+    #         self.toggle["EXPORT"].set(0)
+    #         return
+    #     if self.bboxButtonPressed():
+    #         self.gui.popBox("w", "BBOX Mode", "Please exit BBOX mode first")
+    #         self.toggle["EXPORT"].set(0)
+    #         return
+    #     if self.segButtonPressed():
+    #         self.gui.popBox("w", "Segmentation Mode", "Please exit Segmentation mode first")
+    #         self.toggle["EXPORT"].set(0)
+    #         return
+        
+    
+        # # Export functionality
+        # self.gui.indicateWait("Dataset conversion")
+        # def job():
+        #     logger.debug("Export job: thread started")
+        #     try:
+        #         from tkinter import filedialog
+        #         logger.debug("Export job: opening save dialog (running from worker thread)")
+        #         f = filedialog.asksaveasfilename(defaultextension=".mat", 
+        #                                        filetypes=[("Matlab files", "*.mat")],
+        #                                        title="Export Results As")
+                
+        #         logger.debug("Export job: save path selected=%r", f)
+        #         if f:
+        #             toSave = [i for i in abstract.getPool() if i.selected and len(i.segmentExplict)]
+        #             d = {"name":[],"image":[],"xy":[],"masks":[]}
+        #             for abs in toSave:
+        #                 d["name"].append(str(abs.getAbsPath()))
+        #                 d["image"].append(abs.getImgNumpyRGB())
+        #                 d["xy"].append([seg.xy for seg in abs.segment])
+        #                 d["masks"].append([seg.box for seg in abs.segment])
+        #             # Note: You'll need to implement matPacker.create or use scipy.io.savemat
+        #             logger.debug("Export job: data prepared (counts) names=%d, images=%d, xy=%d, masks=%d",
+        #                  len(d["name"]), len(d["image"]), len(d["xy"]), len(d["masks"]))
+        #             self.gui.popBox("i", "Export", f"Export completed to {f}")
+        #     except Exception as e:
+        #         self.gui.popBox("e", "Export Error", f"Failed to export: {e}")
+        #     finally:
+        #         self.gui.getRoot().after(0, self.gui.dismissWait)
+
     def APPLY_MASK_call(self):
         from .thumbnails import abstract
 
@@ -239,16 +358,16 @@ class funcButton():
                     idxs = range(len(pool))
                     frames_sel = "all"
 
-                # # Validate channel availability across chosen frames
-                # missing = [pool[i].sample_id for i in idxs
-                #         if selected_channel not in getattr(pool[i], "available_channels", [])]
-                # if missing:
-                #     # Warn and abort (don’t flip Segment mode on)
-                #     preview = ", ".join(missing[:5]) + ("..." if len(missing) > 5 else "")
-                #     self.gui.popBox("w", "Channel Not Available",
-                #                     f"Channel {selected_channel} is missing for: {preview}")
-                #     self.toggle["SEGMENT"].set(0)
-                #     return
+                # Validate channel availability across chosen frames
+                missing = [pool[i].sample_id for i in idxs
+                        if selected_channel not in getattr(pool[i], "available_channels", [])]
+                if missing:
+                    # Warn and abort (don’t flip Segment mode on)
+                    preview = ", ".join(missing[:5]) + ("..." if len(missing) > 5 else "")
+                    self.gui.popBox("w", "Channel Not Available",
+                                    f"Channel {selected_channel} is missing for: {preview}")
+                    self.toggle["SEGMENT"].set(0)
+                    return
 
                 # All good → apply masks
                 abstract.apply_channel_mask_to_frames(
