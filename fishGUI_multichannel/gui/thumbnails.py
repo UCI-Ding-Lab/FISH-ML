@@ -285,8 +285,8 @@ class abstract():
     @property
     def finalized_mask(self):
         return getattr(self, "_finalized_mask", None)
-    def set_finalized_mask(self, mask_list):
-        self._finalized_mask = mask_list  # mask_list: list of np.ndarray
+    def set_finalized_mask(self, mask_list: list[np.ndarray]) -> None:
+        self._finalized_mask = mask_list  
 
     @bbox.setter
     def bbox(self, value):
