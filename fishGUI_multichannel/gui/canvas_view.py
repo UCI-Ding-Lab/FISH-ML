@@ -269,6 +269,9 @@ class box():
     @property
     def center(self) -> Circle:
         return self.__center
+    @center.setter
+    def center(self, c) -> Circle:
+        self.__center = Circle(c, radius=5, color='lime', fill=True)
     @property
     def anchors(self) -> dict[str, anchor]:
         return self.__anchors
@@ -289,10 +292,6 @@ class box():
         self.__selected = value
         self.draw = False
         self.rect.set_edgecolor('cyan' if value else 'r')
-
-        center = self.rect.get_center()
-        print("Calculated Nuc Center:", center, type(center))
-        print("Self.Center:", self.center)
         
         for _, anchor_obj in self.__anchors.items():
             anchor_obj.draw = value
@@ -301,7 +300,6 @@ class box():
         background = canvas.copy_from_bbox(subplot.bbox)
         canvas.restore_region(background)
         subplot.draw_artist(self.rect)
-        subplot.draw_artist(self.center)
         if self.__selected:
             for anchor_obj in self.__anchors.values():
                 subplot.draw_artist(anchor_obj.patch)
@@ -319,19 +317,17 @@ class box():
                 if hasattr(self.gui.getStove().subplot, 'patches') and self.rect not in self.gui.getStove().subplot.patches:
                     self.gui.getStove().subplot.add_patch(self.rect)
                     nuc_center = Circle(self.rect.get_center(), radius=5, color='lime', fill=True)
-                    print("Calculated Nuc Center:", nuc_center, type(nuc_center))
-                    print("Self.Center:", self.center)
                     self.gui.getStove().subplot.add_patch(self.center)
             else:
                 if hasattr(self.gui.getStove().subplot, 'patches'):
                     try:
-                        print("Removing rectangle...")
                         self.rect.remove()
-                        self.center.remove()
+                        self.center.remove() # Removes circles when BBOX mode is exited
                     except (NotImplementedError, ValueError):
-                        print("Removing Rectangles EXEMPTION Called...")
                         patches = self.gui.getStove().subplot.patches
                         if self.rect in patches:
+                            # print(self.rect, type(self.rect))
+                            # print(self.center)
                             patches.remove(self.rect)
         except Exception as e:
             print(f"Error in box draw setter: {e}")
@@ -359,6 +355,18 @@ class box():
         self.anchors["top-right"].patch.set_center((self.rect.get_x() + self.rect.get_width(), self.rect.get_y() + self.rect.get_height()))
         self.anchors["pos-anchor"].patch.set_center((self.rect.get_x() + self.rect.get_width() / 2, self.rect.get_y() + self.rect.get_height()))
 
+    @classmethod
+    def removeCenter(cls, gui, center: Circle):
+        patches = list(gui.getStove().subplot.patches)
+        if center in patches:
+            patches.remove(center)
+
+        try:
+            center.remove()
+            print("Previous nucleus center is removed")
+        except NotImplementedError as e:
+            print("Previous circle has already been removed", e)
+   
     @classmethod
     def setBuffer(cls, box: 'box'):
         cls.__buffer = box
@@ -398,6 +406,7 @@ class stove():
         self.tb_pointer = Circle((0, 0), 15, linewidth=0.5, edgecolor='cyan', facecolor='none')
         self.xs = []
         self.ys = []
+        self.old_center = None
         self.markers: list[Circle] = []
         self.press = False
         
@@ -473,13 +482,20 @@ class stove():
                 
             # Handle BBOX mode interactions
             if self.gui.getFuncButton().bboxButtonPressed():
+                
                 if box.getBuffer() and box.getBuffer().selected:
-                    anchorName = box.getBuffer().anchorContains(event.xdata, event.ydata) 
-                    print(anchorName)
+                    anchorName = box.getBuffer().anchorContains(event.xdata, event.ydata) # Anchor stores bboxes, uses x and y finds the specific box
+
                     if anchorName:
                         target = box.getBuffer().anchors[anchorName]
                         target.selected = True
                         anchor.setBuffer(target)
+
+                        b = box.getBuffer()
+                        if self.old_center is None:
+                            self.old_center = b.center
+                        b.removeCenter(self.gui, self.old_center)
+
                         return
                 target = self.getLoaded().findBoxFromPoint(event.xdata, event.ydata) 
                 box.clearBufferAndDeselect()
@@ -520,6 +536,7 @@ class stove():
         self.press = False
         if self.gui.getFuncButton().bboxButtonPressed():
             anchor.clearBuffer()
+            self.old_center = None
         elif self.gui.getFuncButton().segButtonPressed():
             if self.gui.getSeasoning().brushButtonPressed() and segment.getBuffer() and segment.getBuffer().selected:
                 final = list(zip(self.xs, self.ys))
@@ -579,11 +596,12 @@ class stove():
             elif a.location == "pos-anchor":
                 dx = event.xdata - (b.rect.get_x() + w/2)
                 dy = event.ydata - (b.rect.get_y() + h)
-                print("pos-anchor", dx, dy)
                 b.rect.set_xy((x0 + dx, y0 + dy))
             
             b.rect.set_width(w)
             b.rect.set_height(h)
+            new_center = b.rect.get_center()
+            b.center = new_center # Successfully adds dot once bbox is clicked out
             b.anchorUpdate()
             self.canvas.draw()
 

@@ -76,7 +76,7 @@ class abstract():
             if "647" in stem:
                 self.__img_np_647 = zprojected
             elif "488" in stem:
-                self.__img_np_488 = abstract.normalize_to_uint8(abstract.remove_outliers(zprojected, k=18.0, use_median=False))
+                self.__img_np_488 = abstract.normalize_to_uint8(abstract.remove_outliers(zprojected, k=15.0, use_median=False))
             else:
                 logger.warning(f"Unrecognized cytoplasm channel in file {p.name}")
 
@@ -268,6 +268,7 @@ class abstract():
         else:
             self.thumbnail = "default"
             self.__selected = False
+    # Centers calculated and BBoxes generated
     @property
     def bbox(self):
         from .canvas_view import box
@@ -591,6 +592,7 @@ class abstract():
                 except Exception as e:
                     logger.error(f"SAM refine failed on {chan} box {bb}: {str(e)}")
             
+            # Segment is called and masks are passed in
             if chan == "647":
                 self.__seg_647 = [segment(self.gui, m) for m in channel_masks]
             else:
