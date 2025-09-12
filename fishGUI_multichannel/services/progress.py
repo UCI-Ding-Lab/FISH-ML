@@ -1,157 +1,112 @@
-import pathlib, pickle, threading, concurrent.futures, time
+import pickle, threading, concurrent.futures, time
 from tkinter import filedialog, messagebox
-import matPacker
-import re
-from ..gui.thumbnails import abstract
+from ..gui.abstract import abstract
 from ..gui.canvas_view import box, segment
-import pickle
+from .bundle_data import bundle
+from .matPacker import create
+from ..gui.fishGUI import FishGUI
 
 class Progress:
     @staticmethod
-    def save(abstract_class=abstract):
-        # --- Helper functions ---
-        def get_save_filename():
-            return filedialog.asksaveasfilename(
-                defaultextension=".pkl",
-                filetypes=[("Pickle files", "*.pkl")],
-                title="Save Session As"
-            )
-        def get_session_data():
-            return abstract_class.grabPool()
-        def write_session_to_file(filename, session_data):
-            with open(filename, "wb") as file:
-                pickle.dump(session_data, file)
-        def notify_save_complete(filename):
-            messagebox.showinfo("Done", f"Session saved as {filename}")
-        
-        # --- Main Logic ---
-        save_filename = get_save_filename()
-        if not save_filename:
+    def save():
+        """
+        Save current session data including all selected frames, its boundary boxes and 
+        segmentation masks if exist.
+        """
+        filename = filedialog.asksaveasfilename(defaultextension=".pkl", 
+                                         filetypes=[("Pickle files", "*.pkl")],
+                                         title="Save Session As")
+        if not filename: 
             return
-        session_data = get_session_data()
-        write_session_to_file(save_filename, session_data)
-        notify_save_complete(save_filename)
-
-    @staticmethod
-    def load(gui, abstract_class=abstract):
+        list_of_bundled_data = abstract.grabPool() # grabPool() returns a list of bundled data (includes file paths, bbox and masks for all abstract objects)
+        with open(filename, "wb") as file:
+            pickle.dump(list_of_bundled_data, file)
+        messagebox.showinfo("Done", "Session saved as " + filename)    
+        
+    def load(gui: FishGUI):
+        """
+        Load previous session data including all selected frames, its boundary boxes and
+        segmentation masks if exist. 
+        """
         # --- Helper Functions ---
-        def get_load_filename():
+        def get_filename_to_load():
             return filedialog.askopenfilename(filetypes=[("Progress files", "*.pkl")])
-        def read_session_from_file(filename):
-            with open(filename, "rb") as file:
-                return pickle.load(file)
-        def clear_current_pool():
-            abstract_class.getPool().clear()
-        def create_abstract_object(nucleus_path, cyto_paths, bbox_list, seg_list, item, gui):
-            abs_obj = abstract_class(
-                sample_id=getattr(item, "sample_id", nucleus_path.stem),
+        
+        def read_data_from_file(filename):
+            try:
+                with open(filename, "rb") as file:
+                    return pickle.load(file) # returns list of bundled data 
+            except Exception as error:
+                messagebox.showerror("Error", f"Could not read {filename}:\n{error}")
+                return None
+        
+        def clear_previous_session():
+            """
+            - getPool() returns a list of abstract objects in current session
+            - clear() empties this list and references pointing to each objects are removed as well, 
+              deleting all objects in current session automatically
+            """
+            abstract.getPool().clear()
+            
+        def return_valid_paths(nucleus_path, cytoplasm_paths):
+            if not nucleus_path.exists():
+                messagebox.showwarning("Missing file", "Nucleus image not found:\n{nucleus_path}")
+                return None
+        
+            missing_cytoplasm_file = [str(path) for path in cytoplasm_paths if not path.exists()]
+            if missing_cytoplasm_file:
+                messagebox.showwarning("Missing file", "Cytoplasm image(s) not found:\n" + "\n".join(missing_cytoplasm_file))
+                return None
+            
+            return nucleus_path, cytoplasm_paths
+            
+        def create_abstract_object(nucleus_path, cyto_paths, bbox_list, seg_list, gui: FishGUI):
+            abstract_object = abstract(
                 nucleus_path=nucleus_path,
                 cyto_paths=cyto_paths,
                 gallery_frame=gui.getTifSequence().gallery_frame,
                 gui=gui
             )
-            abs_obj.bbox = [box(b, gui) for b in (bbox_list or [])]
-            abs_obj.segment = [segment(gui, m) for m in seg_list]
-            return abs_obj
-        def notify_missing_file(message):
-            messagebox.showwarning("Missing file", message)
-        def notify_unrecognized_entry(item_type):
-            messagebox.showwarning("Unrecognized entry", f"Skipping unsupported item: {item_type}")
-        def notify_skipped_row(error):
-            messagebox.showwarning("Skipped one row", f"Reason:{error}")
-        def notify_load_error(filename, error):
-            messagebox.showerror("Error", f"Could not read {filename}:\n{error}")
-        def send_first():
-            abstract_class.sendFirst()
+            abstract_object.bbox = [box(b, gui) for b in bbox_list]
+            abstract_object.segment = [segment(gui, m) for m in seg_list]
+            return abstract_object
 
         # --- Main Logic ---
-        load_filename = get_load_filename()
+        load_filename = get_filename_to_load()
         if not load_filename: return
-        try:
-            session_data = read_session_from_file(load_filename)
-        except Exception as error:
-            notify_load_error(load_filename, error)
-            return
-
-        clear_current_pool()
+        session_data = read_data_from_file(load_filename)
+        if session_data is None: return
+        clear_previous_session()
         for item in session_data:
             try:
-                if hasattr(item, "L"):
-                    nucleus_path, cytoplasm_paths, bbox_list, seg_list = item.L()
-                    if not nucleus_path.exists():
-                        notify_missing_file(f"Nucleus image not found:\n{nucleus_path}")
-                        continue
-                    missing_cytoplasm_file = [str(p) for p in cytoplasm_paths if not p.exists()]
-                    if missing_cytoplasm_file:
-                        notify_missing_file(f"Cytoplasm image(s) not found:\n" + "\n".join(missing_cytoplasm_file))
-                    create_abstract_object(nucleus_path, cytoplasm_paths, bbox_list, seg_list, item, gui)
-                else:
-                    notify_unrecognized_entry(type(item))
+                single_bundle : bundle = item
+                nucleus_path, cytoplasm_paths, bbox_list, seg_list = single_bundle.extract_data_from_bundles() 
+                valid_paths = return_valid_paths(nucleus_path, cytoplasm_paths) 
+                if valid_paths is None:
+                    continue
+                create_abstract_object(nucleus_path, cytoplasm_paths, bbox_list, seg_list, gui)
             except Exception as error:
-                notify_skipped_row(error)
-        send_first()
+                messagebox.showwarning("Skipped one row", f"Reason:{error}")
+        abstract.sendFirst()
 
     @staticmethod
-    def export_finalized_masks(gui, abstract_class=abstract):
+    def generateBbox(gui: FishGUI, list_of_abstract_objects: list[abstract]):
+        """
+        Generates bounding boxes using multithreading
+        Called in gui/buttons.py, IMPORT_call method
+        This ensures that boundary boxes are generate once images are imported
+        """
         # --- Helper functions ---
-        def get_export_filename():
-            return filedialog.asksaveasfilename(
-                defaultextension=".mat",
-                filetypes=[("Matlab files", "*.mat")],
-                title="Export Finalized Masks As"
-            )
-        def get_frames_to_export():
-            return [
-                frame for frame in abstract_class.getPool()
-                if frame.selected and getattr(frame, "finalized_mask", None)
-            ]
-        def notify_export_cancelled():
-            messagebox.showinfo("Export Cancelled", "No file was selected for export.")
-        def notify_no_data():
-            messagebox.showinfo("No Data", "No frames are selected or have finalized masks for export.")
-        def collect_export_data(frames_to_export):
-            cytoplasm_filenames = []
-            segmentation_masks = []
-            for frame in frames_to_export:
-                for cytoplasm_path in frame.getCytoplasmPaths():
-                    cytoplasm_filenames.append(str(cytoplasm_path))
-                    segmentation_masks.append(frame.finalized_mask)
-            return cytoplasm_filenames, segmentation_masks
-        def write_mat_file(cytoplasm_filenames, segmentation_masks, filename):
-            matPacker.create(cytoplasm_filenames, segmentation_masks, filename)
-        
-
-        # --- Main Logic ---
-        export_filename = get_export_filename()
-        if not export_filename:
-            notify_export_cancelled()
-            return
-        frames_to_export = get_frames_to_export()
-        if not frames_to_export:
-            notify_no_data()
-            return
-        cytoplasm_filenames, segmentation_masks = collect_export_data(frames_to_export)
-        write_mat_file(cytoplasm_filenames, segmentation_masks, export_filename)
-
-    @staticmethod
-    def generateBbox(gui, abstracts):
-        def generate_bbox_for_object(abstract_object):
-            # --- Helper functions ---
+        def generate_bbox_for_object(single_abstract_object: abstract):
             start_time = time.time()
-            _ = abstract_object.bbox
+            _ = single_abstract_object.bbox
             end_time = time.time()
-            print(f"Generated bbox for {abstract_object.getAbsPath()} in {end_time - start_time:.4f} seconds")
-        def generate_bboxes_in_thread():
-            with concurrent.futures.ThreadPoolExecutor(
-                max_workers=max(1, min(4, len(abstracts)))
-            ) as executor:
-                list(executor.map(generate_bbox_for_object, abstracts))
-        
-        # --- Main Logic ---
-        threading.Thread(target=generate_bboxes_in_thread, daemon=True).start()
+            print(f"Generated bbox for {single_abstract_object.getNucleusPath()} in {end_time - start_time:.4f} seconds")
 
-# Shortcut aliases for Progress class methods allowing direct calls
-save = Progress.save
-load = Progress.load
-export = Progress.export_finalized_masks
-generateBbox = Progress.generateBbox
+        def generate_bboxes():
+            max_workers = min(3, len(list_of_abstract_objects))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                executor.map(generate_bbox_for_object, list_of_abstract_objects)
+
+        # --- Main Logic ---
+        threading.Thread(target=generate_bboxes, daemon=True).start() # Start the thread of generating bboxes
