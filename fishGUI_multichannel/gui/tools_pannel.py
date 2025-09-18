@@ -1,10 +1,16 @@
-# fishgui/gui/tools_pannel.py
 import tkinter
 import pathlib
 import threading
 from PIL import Image, ImageTk
 from ..services.progress import Progress
-from .thumbnails import abstract as GUIAbstract
+from .abstract import abstract as GUIAbstract
+from ..utils.image_preprocessing import (
+    normalize_to_uint8,
+    grayscale_to_rgb,
+    preprocess_nucleus_stack,
+    preprocess_cytoplasm_stack,
+    remove_outliers
+)
 
 class seasoning():
     def __init__(self, gui):
@@ -117,15 +123,15 @@ class seasoning():
         factor = (250 - brightness_value) * 0.005
         self.gui.getStove().adjust_brightness(factor)
     
-    def press_act(self, widget: str):
-        if not self.gui.getFuncButton().segButtonPressed():
-            self.gui.popBox("w", "Segmentation Mode", "Please enter Segmentation mode first")
-            for k, v in self.tools_var.items():
-                v.set(0)
-            return
-        for k, v in self.tools_var.items():
-            if k != widget:
-                v.set(0)
+    # def press_act(self, widget: str):
+    #     if not self.gui.getFuncButton().segButtonPressed():
+    #         self.gui.popBox("w", "Segmentation Mode", "Please enter Segmentation mode first")
+    #         for k, v in self.tools_var.items():
+    #             v.set(0)
+    #         return
+    #     for k, v in self.tools_var.items():
+    #         if k != widget:
+    #             v.set(0)
     
     def get_marker_size(self) -> int:
         return self.marker_size_var.get()
@@ -135,16 +141,23 @@ class seasoning():
         return self.tools_var["eraser"].get()
     
     def ADDBBOX_CALL(self):
+        if not self.press_act("add_bbox"):
+            return
         if not self.gui.getFuncButton().bboxButtonPressed():
             self.gui.popBox("w", "BBOX Mode", "Please enter BBOX mode first")
             return
-        loaded_image = self.gui.getStove().getLoaded()
+        loaded_image = self.gui.getStove().getLoaded() # TODO - check what this loads
         if not loaded_image:
             self.gui.popBox("w", "No Image", "No image is loaded")
             return
-        from .canvas_view import box
+        from .canvas.box import box
         width, height = loaded_image.getImgNumpyRGB().shape[1], loaded_image.getImgNumpyRGB().shape[0]
-        bbox = [width // 2 - 150, height // 2 - 150, width // 2 + 150, height // 2 + 150]
+        bbox = [width // 2 - 150, height // 2 - 150, width // 2 + 150, height // 2 + 150] # generate a 300x300 box at the center
+        
+        # Deselect all existing boxes before adding a new one
+        for b in loaded_image.bbox:
+            b.selected = False 
+        
         new_box = box(bbox, self.gui)
         loaded_image.bbox.append(new_box)
         new_box.selected = True
@@ -157,8 +170,7 @@ class seasoning():
         self.gui.indicateWait("Saving")
         def job():
             try:
-                Progress.save(abstract_cls=GUIAbstract)
-                self.gui.popBox("i", "Done", "Session saved.")
+                Progress.save()
             except Exception as e:
                 self.gui.popBox("e", "Save Error", str(e))
             finally:
@@ -169,7 +181,7 @@ class seasoning():
         self.gui.indicateWait("Loading")
         def job():
             try:
-                Progress.load(self.gui, abstract_cls=GUIAbstract, abstract_ctor=GUIAbstract)
+                Progress.load(self.gui)
             except Exception as e:
                 self.gui.popBox("e", "Load Error", str(e))
             finally:
@@ -177,7 +189,7 @@ class seasoning():
         threading.Thread(target=job, daemon=True).start()
 
     def on_channel_change(self, new_chan: str):
-        from .thumbnails import abstract
+        from .abstract import abstract
         from PIL import Image, ImageTk
         
         # Update the channel variable to reflect the change in the UI
@@ -198,13 +210,13 @@ class seasoning():
             else abs_obj._abstract__seg_488
         )
         abs_obj._abstract__img_np_cyto = (
-            abs_obj._abstract__img_np_cyto1
+            abs_obj._abstract__img_np_647
             if new_chan == "647"
-            else abs_obj._abstract__img_np_cyto2
+            else abs_obj._abstract__img_np_488
         )
 
         # rebuild the thumbnail
-        rgb = abstract.grayscale_to_rgb(abs_obj._abstract__img_np_cyto)
+        rgb = grayscale_to_rgb(abs_obj._abstract__img_np_cyto)
         abs_obj._abstract__img_pil_thumbnail = Image.fromarray(rgb).resize((64, 64))
         abs_obj._abstract__img_tk_thumbnail = ImageTk.PhotoImage(abs_obj._abstract__img_pil_thumbnail)
         abs_obj.getLabel().config(image=abs_obj._abstract__img_tk_thumbnail)
@@ -212,3 +224,28 @@ class seasoning():
         # redraw everything
         self.gui.getStove().cook(abs_obj)
         abs_obj.drawSegmentation = True
+
+    def press_act(self, widget: str):
+        func_btn = self.gui.getFuncButton()
+        bbox_on = func_btn.bboxButtonPressed()
+        seg_on = func_btn.segButtonPressed()
+
+        # Only allow add_bbox if BBOX is ON and SEGMENT is OFF
+        if widget == "add_bbox":
+            if not bbox_on or seg_on:
+                self.gui.popBox("w", "Tool Disabled", "Add BBOX is only available when BBOX mode is ON and Segmentation mode is OFF.")
+                return False
+
+        # Only allow brush/eraser if SEGMENT is ON and BBOX is OFF
+        if widget in ("brush", "eraser"):
+            if not seg_on or bbox_on:
+                self.gui.popBox("w", "Tool Disabled", "Brush and Eraser are only available when Segmentation mode is ON and BBOX mode is OFF.")
+                for k, v in self.tools_var.items():
+                    v.set(0)
+                return False
+
+        # Ensure only one tool is active at a time (for brush/eraser)
+        for k, v in self.tools_var.items():
+            if k != widget:
+                v.set(0)
+        return True

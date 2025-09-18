@@ -3,7 +3,8 @@ import logging
 from ..services.bundle_data import bundle
 from ..services.apply_channel_mask import apply_channel_mask_to_frames
 from ..gui.abstract import abstract
-from ..gui.fishGUI import FishGUI
+import os
+from concurrent.futures import ThreadPoolExecutor
 
 class SessionManager:
     __pool = []
@@ -15,19 +16,19 @@ class SessionManager:
     """
     # --- Pool Management ---
     @classmethod
-    def getPool(cls):
-        """
-        Returns the list of all abstract objects currently managed in the session.
-        """
-        return cls.__pool
-
-    @classmethod
-    def addToPool(cls, abstract_object: abstract):
+    def addToPool(cls, abstract_object):
         """
         Called when a new frame is loaded. 
         Adds this new abstract object to the current pool.
         """
         cls.__pool.append(abstract_object)
+
+    @classmethod
+    def getPool(cls):
+        """
+        Returns the list of all abstract objects currently managed in the session.
+        """
+        return cls.__pool
 
     @classmethod
     def setBuffer(cls, abstract_object: abstract):
@@ -150,22 +151,25 @@ class SessionManager:
                 logging.debug(f"Object {abstract_object} is not an instance of abstract. Skipping.")
                 continue 
             if abstract_object.selected:
-                # call bundle class constructor from services/bundle_data.py
+                seg_647 = [s._segment__data.T for s in abstract_object._get_seg_list_for_channel("647")]
+                seg_488 = [s._segment__data.T for s in abstract_object._get_seg_list_for_channel("488")]
+                seg_dict = {"647": seg_647, "488": seg_488}
                 bundled_info_for_save = bundle(
+                    abstract_object.sample_id,
                     nucleus_path=abstract_object.getNucleusPath(),
                     cyto_paths=list(abstract_object.getCytoplasmPaths()),
                     bbox=abstract_object.boundingBoxRevised,
-                    segment=abstract_object.segmentationRevised
+                    segment=seg_dict
                 )
                 result.append(bundled_info_for_save)
         return result
     
     @classmethod
-    def apply_channel_mask_to_frames(cls, source_channel, selected_frames, target_channels, gui=None):
-        apply_channel_mask_to_frames(cls, source_channel, selected_frames, target_channels, gui)
-    
+    def apply_channel_mask_to_frames(cls, source_channel, selected_frames, target_channels, on_done=None):
+        apply_channel_mask_to_frames(cls, source_channel, selected_frames, target_channels, on_done=on_done)
+
     @classmethod
-    def segment_selected(cls, gui: FishGUI):
+    def segment_selected(cls, gui):
         """
         Runs segmentation on all frames that the user has marked as "selected for segmentation"
         """
@@ -178,18 +182,38 @@ class SessionManager:
         if not ready:
             return
 
+        # max_workers = min(5, os.cpu_count() or 1)  # Limit to 5 or number of CPUs
+        # with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        #     futures = [executor.submit(cls._segment_each, abs_obj, gui) for abs_obj in ready]
+            
+        # gui.popBox("i", "Segmentation", f"Started segmentation for {len(selected_frames)} images.")
+
+        # # --- Monitor threads and turn off segmentation selection when done ---
+        # def monitor_threads():
+        #     for f in futures:
+        #         f.result()  
+        #     # Turn off the segmentation selection button in the GUI
+        #     gui.getFuncButton().toggle["SEGMENTATION_SELECTION"].set(0)
+
         threads = []
         for abs_obj in selected_frames:
-            t = threading.Thread(target=_segment_each, args=(abs_obj,), daemon=True)
+            t = threading.Thread(target=cls._segment_each, args=(abs_obj,gui), daemon=True)
             t.start()
             threads.append(t)
 
         gui.popBox("i", "Segmentation", f"Started segmentation for {len(selected_frames)} images.")
+
+        def monitor_threads():
+            for t in threads:
+                t.join()
+            gui.getFuncButton().toggle["SEGMENTATION_SELECTION"].set(0)
+
+        threading.Thread(target=monitor_threads, daemon=True).start()
     
 
     # --- Helper function for segment_selected method ---
-    staticmethod
-    def _get_selected_frames():
+    @classmethod
+    def _get_selected_frames(cls):
         """
         Returns frames that are selected for segmentation
         """
@@ -201,9 +225,10 @@ class SessionManager:
             f"Segmenting {len(selected_frames)} images: "
             f"{[str(abstract_object.getNucleusPath().name) for abstract_object in selected_frames]}"
         )
+        return selected_frames
 
-    @staticmethod
-    def _split_by_bbox_generated(frames):
+    @classmethod
+    def _split_by_bbox_generated(cls, frames):
         ready = []
         not_ready = []
         for obj in frames:
@@ -228,6 +253,11 @@ class SessionManager:
         """
         Runs segmentation for each channel in the frame
         """
+        thread_name = threading.current_thread().name
+        print(f"[DEBUG] Thread {thread_name} STARTED for sample {abs_obj.sample_id}")
+        import time
+        start = time.time()
+        
         for channel in abs_obj.available_channels:
             seg_list = abs_obj._get_seg_list_for_channel(channel)
             if seg_list:
@@ -237,7 +267,8 @@ class SessionManager:
                 _ = abs_obj.segment # If segmentation masks isn't present yet, run segmentation for the channel
                 abs_obj._set_seg_list_for_channel(channel, abs_obj.seg)
             gui.getRoot().after(0, lambda a=abs_obj: cls._ui_show_segmented(a, gui)) # ensure threading safety and responsiveness
-
+        end = time.time()
+        print(f"[DEBUG] Thread {thread_name} FINISHED for sample {abs_obj.sample_id} in {end-start:.2f}s")
     
 
 

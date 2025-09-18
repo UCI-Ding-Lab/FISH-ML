@@ -1,8 +1,7 @@
 from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
-from ..app import FishGUI
 
 class FishToolBar(NavigationToolbar2Tk):
-    def __init__(self, canvas, window, gui: FishGUI):
+    def __init__(self, canvas, window, gui):
         super().__init__(canvas, window)
         self.fishGUI = gui
 

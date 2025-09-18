@@ -1,10 +1,11 @@
 import pickle, threading, concurrent.futures, time
 from tkinter import filedialog, messagebox
 from ..gui.abstract import abstract
-from ..gui.canvas_view import box, segment
+from ..gui.canvas.box import box
+from ..gui.canvas.segment import segment
 from .bundle_data import bundle
 from .matPacker import create
-from ..gui.fishGUI import FishGUI
+from .session_manager import SessionManager
 
 class Progress:
     @staticmethod
@@ -18,15 +19,15 @@ class Progress:
                                          title="Save Session As")
         if not filename: 
             return
-        list_of_bundled_data = abstract.grabPool() # grabPool() returns a list of bundled data (includes file paths, bbox and masks for all abstract objects)
+        list_of_bundled_data = SessionManager.grabPool() # grabPool() returns a list of bundled data (includes file paths, bbox and masks for all abstract objects)
         with open(filename, "wb") as file:
             pickle.dump(list_of_bundled_data, file)
         messagebox.showinfo("Done", "Session saved as " + filename)    
         
-    def load(gui: FishGUI):
+    def load(gui):
         """
-        Load previous session data including all selected frames, its boundary boxes and
-        segmentation masks if exist. 
+        Load previous session data (all abstract objects saved previously) including all selected frames, 
+        its boundary boxes and segmentation masks if exist. 
         """
         # --- Helper Functions ---
         def get_filename_to_load():
@@ -46,7 +47,7 @@ class Progress:
             - clear() empties this list and references pointing to each objects are removed as well, 
               deleting all objects in current session automatically
             """
-            abstract.getPool().clear()
+            SessionManager.getPool().clear()
             
         def return_valid_paths(nucleus_path, cytoplasm_paths):
             if not nucleus_path.exists():
@@ -60,37 +61,49 @@ class Progress:
             
             return nucleus_path, cytoplasm_paths
             
-        def create_abstract_object(nucleus_path, cyto_paths, bbox_list, seg_list, gui: FishGUI):
+        def create_abstract_object(sample_id, nucleus_path, cyto_paths, bbox_list, seg_dict, gui):
             abstract_object = abstract(
+                sample_id, 
                 nucleus_path=nucleus_path,
                 cyto_paths=cyto_paths,
                 gallery_frame=gui.getTifSequence().gallery_frame,
                 gui=gui
             )
             abstract_object.bbox = [box(b, gui) for b in bbox_list]
-            abstract_object.segment = [segment(gui, m) for m in seg_list]
+            seg_647 = [segment(gui, m) for m in seg_dict.get("647", [])]
+            seg_488 = [segment(gui, m) for m in seg_dict.get("488", [])]
+            abstract_object._abstract__seg_647 = seg_647
+            abstract_object._abstract__seg_488 = seg_488
+            # Set current channel mask to the selected channel TODO - clean with abstractpy
+            if getattr(abstract_object, "selected_channel", "647") == "647":
+                abstract_object._abstract__current_channel_mask = seg_647
+            else:
+                abstract_object._abstract__current_channel_mask = seg_488
+            if seg_647 or seg_488:
+                abstract_object.segment_generated = True
             return abstract_object
 
         # --- Main Logic ---
-        load_filename = get_filename_to_load()
-        if not load_filename: return
-        session_data = read_data_from_file(load_filename)
+        loaded_filename = get_filename_to_load()
+        if not loaded_filename: return
+        session_data = read_data_from_file(loaded_filename)
         if session_data is None: return
         clear_previous_session()
         for item in session_data:
+            print(type(item))
             try:
                 single_bundle : bundle = item
-                nucleus_path, cytoplasm_paths, bbox_list, seg_list = single_bundle.extract_data_from_bundles() 
+                sample_id, nucleus_path, cytoplasm_paths, bbox_list, seg_dict = single_bundle.extract_data_from_bundles() 
                 valid_paths = return_valid_paths(nucleus_path, cytoplasm_paths) 
-                if valid_paths is None:
+                if valid_paths is None: # prevent loading frames and its data with at least one invalid path
                     continue
-                create_abstract_object(nucleus_path, cytoplasm_paths, bbox_list, seg_list, gui)
+                create_abstract_object(sample_id, nucleus_path, cytoplasm_paths, bbox_list, seg_dict, gui)
             except Exception as error:
                 messagebox.showwarning("Skipped one row", f"Reason:{error}")
-        abstract.sendFirst()
+        SessionManager.sendFirst()
 
     @staticmethod
-    def generateBbox(gui: FishGUI, list_of_abstract_objects: list[abstract]):
+    def generateBbox(gui, list_of_abstract_objects: list[abstract]):
         """
         Generates bounding boxes using multithreading
         Called in gui/buttons.py, IMPORT_call method
