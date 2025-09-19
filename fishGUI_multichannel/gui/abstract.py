@@ -323,6 +323,7 @@ class abstract():
         they are in when the user clicks on the thumbnail and sets
         it to focus
         """
+        self.gui.getSeasoning().update_channel_selector_for_image(self)
         self.gui.getStove().bufferSetCurrent(3)
         self.gui.getStove().dump()
         from ..services.session_manager import SessionManager

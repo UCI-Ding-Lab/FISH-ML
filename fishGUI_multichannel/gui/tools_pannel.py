@@ -5,11 +5,7 @@ from PIL import Image, ImageTk
 from ..services.progress import Progress
 from .abstract import abstract as GUIAbstract
 from ..utils.image_preprocessing import (
-    normalize_to_uint8,
     grayscale_to_rgb,
-    preprocess_nucleus_stack,
-    preprocess_cytoplasm_stack,
-    remove_outliers
 )
 
 class seasoning():
@@ -189,7 +185,6 @@ class seasoning():
         threading.Thread(target=job, daemon=True).start()
 
     def on_channel_change(self, new_chan: str):
-        from .abstract import abstract
         from PIL import Image, ImageTk
         
         # Update the channel variable to reflect the change in the UI
@@ -214,6 +209,9 @@ class seasoning():
             if new_chan == "647"
             else abs_obj._abstract__img_np_488
         )
+
+        # Update the main canvas
+        abs_obj._abstract__img_np_rgb = grayscale_to_rgb(abs_obj._abstract__img_np_cyto)
 
         # rebuild the thumbnail
         rgb = grayscale_to_rgb(abs_obj._abstract__img_np_cyto)
@@ -249,3 +247,7 @@ class seasoning():
             if k != widget:
                 v.set(0)
         return True
+    
+    def update_channel_selector_for_image(self, abs_obj):
+        # Set the OptionMenu to match the current image's selected channel
+        self.channel_var.set(abs_obj.selected_channel)

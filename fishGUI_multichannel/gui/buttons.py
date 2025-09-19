@@ -11,6 +11,8 @@ from ..services.session_manager import SessionManager
 
 logger = logging.getLogger(__name__)
 
+
+# TODO duplicate in progress.py
 class progress():
     @staticmethod
     def generateBbox(gui, abstracts):
