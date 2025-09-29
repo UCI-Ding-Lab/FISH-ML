@@ -23,9 +23,33 @@ import matPacker
 import tifffile 
 from skimage import filters, morphology, measure, segmentation
 from scipy import ndimage as ndi
+import re
+import logging
+from skimage.restoration import estimate_sigma
+
+logging.basicConfig(
+    format="%(asctime)s %(levelname)-8s %(message)s",
+    level=logging.DEBUG,
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger(__name__)
 
 
-
+def project_stack_to_2d(stack: np.ndarray, method: str = "max") -> np.ndarray:
+    if method == "max":
+        return np.max(stack, axis=0)
+    elif method == "mean":
+        return np.mean(stack, axis=0).astype(stack.dtype)
+    elif method == "median":
+        return np.median(stack, axis=0).astype(stack.dtype)
+    elif method == "focus":
+        # pick slice with highest variance of Laplacian (sharpest)
+        scores = [cv2.Laplacian(slice_, cv2.CV_64F).var() for slice_ in stack]
+        best = int(np.argmax(scores))
+        return stack[best]
+    else:
+        raise ValueError(f"Unknown projection method: {method!r}")
+    
 class FishToolBar(NavigationToolbar2Tk):
     def __init__(self, canvas, window, gui: FishGUI):
         super().__init__(canvas, window)
@@ -120,7 +144,7 @@ class progress():
                 _ = abs.bbox
                 end_time = time.time()
                 print(f"Generated bbox for {abs.getAbsPath()} in {end_time - start_time:.4f} seconds")
-            max_workers = min(1, len(abstracts))
+            max_workers = min(os.cpu_count(), len(abstracts)) # CHECK
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                 executor.map(generate_bbox, abstracts)
         threading.Thread(target=generate_bboxes, daemon=True).start() # Start the thread of generating bboxes
@@ -480,6 +504,22 @@ class seasoning():
         self.brightness_bar.bind("<ButtonRelease-1>", self.on_brightness_bar_change)
         self.brightness_reset = tkinter.Button(self.toolbank, text="Reset", command=lambda: self.on_brightness_bar_change(None))
         
+        self.channel_var = tkinter.StringVar(value="647")
+        self.channel_selector = tkinter.OptionMenu(self.toolbank, self.channel_var, "")
+        self.channel_selector.pack(side=tkinter.TOP, fill=tkinter.X)
+    
+    def update_channel_menu(self, channels: list[str]):
+        menu = self.channel_selector["menu"]
+        menu.delete(0, "end")
+        for ch in channels:
+            menu.add_command(label=ch,
+                            command=lambda v=ch: self.on_channel_change(v))
+        # set default
+        self.channel_var.set(channels[0])
+        # disable the widget if there's only one choice
+        state = "normal" if len(channels) > 1 else "disabled"
+        self.channel_selector.configure(state=state)
+    
 
     def pack(self):
         self.toolbank.pack(side=tkinter.RIGHT, fill=tkinter.BOTH)
@@ -556,6 +596,37 @@ class seasoning():
             self.gui.getRoot().after(0, self.gui.dismissWait)
         threading.Thread(target=job, daemon=True).start()
         
+    def on_channel_change(self, new_chan: str):
+        abs = self.gui.getStove().getLoaded()
+        if not abs:
+            return
+
+        # turn off old overlays
+        abs.drawSegmentation = False
+
+        # update the pointer
+        abs.selected_channel = new_chan
+        abs._abstract__seg = (
+            abs._abstract__seg_647
+            if new_chan == "647"
+            else abs._abstract__seg_488
+        )
+        abs._abstract__img_np_cyto = (
+            abs._abstract__img_np_cyto1
+            if new_chan == "647"
+            else abs._abstract__img_np_cyto2
+        )
+
+        # rebuild the thumbnail
+        rgb = abstract.grayscale_to_rgb(abs._abstract__img_np_cyto)
+        abs.__img_pil_thumbnail = Image.fromarray(rgb).resize((64, 64))
+        abs.__img_tk_thumbnail  = ImageTk.PhotoImage(abs.__img_pil_thumbnail)
+        abs.getLabel().config(image=abs.__img_tk_thumbnail)
+
+        # redraw everything
+        self.gui.getStove().cook(abs)
+        abs.drawSegmentation = True
+
 class stove():
     BILT_BUFFER1 = None
     BILT_BUFFER2 = None
@@ -610,25 +681,6 @@ class stove():
         self.setLoaded(abs)
         self.ax_img = self.subplot.imshow(self.getLoaded().getImgNumpyRGB())
         self.subplot.set_axis_off()
-
-        # for bbox in self.getLoaded().bbox:
-        #     rect = Rectangle(
-        #         (bbox.final[0], bbox.final[1]),
-        #         bbox.final[2] - bbox.final[0],
-        #         bbox.final[3] - bbox.final[1],
-        #         edgecolor='red', facecolor='none', linewidth=1.0
-        #     )
-        #     self.subplot.add_patch(rect)
-
-        # for seg in self.getLoaded().segment:
-        #     y, x = np.where(seg._segment__data.T > 0)
-        #     self.subplot.scatter(x, y, s=0.5, c='orange', marker='.', linewidths=0)
-            
-        # bbox_list = self.getLoaded().bbox
-        # centers = [((b.final[0]+b.final[2])/2, (b.final[1]+b.final[3])/2) for b in bbox_list]
-        # for center in centers:
-        #     self.subplot.add_patch(Circle(center, radius=10, edgecolor='blue', facecolor='blue'))
-
         self.canvas.draw()
 
     def dump(self):
@@ -847,53 +899,73 @@ class stove():
 class abstract():
     __pool: list[abstract] = []
     __buffer: abstract = None
-    
-    def __init__(self, path: pathlib.Path, gallery_frame, gui: FishGUI):
-        self.__abs_path = path
+
+    def __init__(
+        self,
+        sample_id: str,
+        nucleus_path: pathlib.Path,
+        cyto_paths: list[pathlib.Path],
+        gallery_frame,
+        gui: "FishGUI"
+    ):
         self.gui = gui
+        self.sample_id = sample_id
+        self.__abs_path = nucleus_path
+        self.__cyto_paths = cyto_paths
 
-        self.__img_np_stack = tifffile.imread(self.__abs_path)
+        nuc_stack = tifffile.imread(nucleus_path)
+        self.__img_np_nucleus = abstract.preprocess_nucleus_stack(nuc_stack)
 
-        if self.__img_np_stack.ndim == 2 or self.__img_np_stack.shape[0] == 2:
-            print("Green and DAPI Channels")
-            cyto2_index = -1
-            nuc_index = 1
+        self.__img_np_647 = None
+        self.__img_np_488 = None
+        for p in cyto_paths:
+            stack = tifffile.imread(p)
+            zprojected = abstract.preprocess_cytoplasm_stack(stack, top_n=8) # TODO  - unnecessary if zprojected
+            stem = p.stem.lower()
+            if "647" in stem:
+                self.__img_np_647 = zprojected
+            elif "488" in stem:
+                self.__img_np_488 = zprojected
+            else:
+                logger.warning(f"Unrecognized cytoplasm channel in file {p.name}")
+        self.__img_np_cyto1 = self.__img_np_647
+        self.__img_np_cyto2 = self.__img_np_488
 
-        elif self.__img_np_stack.ndim == 3 or self.__img_np_stack.shape[0] == 3:
-            print("Red, Green, and DAPI Channels")
-            cyto2_index = 1
-            nuc_index = 2
-
+        self.available_channels = []
+        if self.__img_np_647 is not None:
+            self.available_channels.append("647")
+        if self.__img_np_488 is not None:
+            self.available_channels.append("488")
+        self.selected_channel = self.available_channels[0] # set default
+        # Set current channel
+        if self.selected_channel == "647":
+            self.__img_np_cyto = self.__img_np_647
         else:
-            raise ValueError(
-                f"Expected a 3-channel TIF with shape (3, H, W), but got shape {self.__img_np_stack.shape} from {self.__abs_path.name}"
-            )
+            self.__img_np_cyto = self.__img_np_488
+                
+        # build thumbnail
+        thumbnail_img = None
+        if self.__img_np_cyto1 is not None:
+            thumbnail_img = self.__img_np_cyto1
+        elif self.__img_np_cyto2 is not None:
+            thumbnail_img = self.__img_np_cyto2
+        else:
+            thumbnail_img = self.__img_np_nucleus
 
-        nucleus = self.__img_np_stack[nuc_index]
-        cyto1 = self.__img_np_stack[0] # Always will be 0
-        cyto2 = self.__img_np_stack[cyto2_index] if (cyto2_index != -1) else -1 # Equal to -1 in cases of 2 channels
-        cyto1 = abstract.clahe(abstract.normalize_to_uint8(cyto1))
-        cyto2 = abstract.clahe(abstract.normalize_to_uint8(cyto2)) if cyto2_index != -1 else None
-        nucleus = abstract.clahe(nucleus)
-        self.__img_np_nucleus = nucleus
-        self.__img_np_cyto1 = cyto1 
-        self.__img_np_cyto2 = cyto2
-        self.__cyt_clahe = cyto1 
-        
-        self.__img_np_rgb1 = self.grayscale_to_rgb(self.__img_np_cyto1)
-        # self.__img_np_rgb2 = self.grayscale_to_rgb(self.__img_np_cyto2) 
-        self.__img_pil_thumbnail = Image.fromarray(self.__img_np_rgb1).resize((64, 64))
-        self.__img_tk_thumbnail = ImageTk.PhotoImage(self.__img_pil_thumbnail)
-        
+        rgb = abstract.grayscale_to_rgb(thumbnail_img)
+        self.__img_np_rgb1 = rgb
+        pil = Image.fromarray(rgb).resize((64, 64))
+        tk_img = ImageTk.PhotoImage(pil)
+        self.__img_pil_thumbnail = pil
+        self.__img_tk_thumbnail = tk_img
         self.__label = tkinter.Label(gallery_frame,
-                                     image=self.__img_tk_thumbnail,
-                                     width=64,
-                                     height=64,
-                                     relief=tkinter.FLAT,
-                                     borderwidth=0)
+                                    image=tk_img,
+                                    width=64, height=64,
+                                    relief=tkinter.FLAT, borderwidth=0)
         self.__label.pack(side=tkinter.LEFT, padx=2, pady=2)
         self.__label.bind("<Button-1>", self.on_click)
-        
+
+        # initialize all your other flags and placeholders
         self.__img_pil_thumbnail_bbox = None
         self.__img_pil_thumbnail_select = None
         self.__img_pil_thumbnail_crossout = None
@@ -909,32 +981,19 @@ class abstract():
         self.__drawBbox: bool = False
         self.__seg: list[segment] = []
         self.__drawSeg: bool = False
-
         self.__bbox_generated: bool = False
         self.__segment_generated: bool = False
 
+        self.selected_channel = "647" if self.__img_np_cyto1 is not None else "488"
+
         abstract.addToPool(self)
-        
-    # @property
-    # def segment(self) -> list[segment]:
-        # def job():
-        #     bbox_nucleus = self.gui.getBackEnd().AppIntDINOwrapper(self.__img_np_nucleus)
-        #     centers = [((b[0] + b[2]) / 2, (b[1] + b[3]) / 2) for b in bbox_nucleus]
-        #     bbox_cyto = self.gui.getBackEnd().AppIntDINOwrapperB(self.__img_np_cyto1, centers)
-        #     masks: np.ndarray = self.gui.getBackEnd().finetune.AppIntPREDICTwrapper(self.__img_np_cyto1, bbox_cyto)
-        #     for m in masks:
-        #         self.__seg.append(segment(self.gui, m))
-        #     self.segment_generated = True
-        #     self.gui.getRoot().after(0, self.gui.dismissWait)
-            
-        # if not self.segment_generated:
-        #     self.gui.indicateWait("Segmentation")
-        #     self.gui.getRoot().update_idletasks()
-        #     t = threading.Thread(target=job, daemon=True)
-        #     t.start()
-        #     while not self.segment_generated: time.sleep(0.1)
-        
-        # return self.__seg
+
+    def get_cyto1(self) -> np.ndarray:
+        return self.__img_np_cyto1
+
+    def get_cyto2(self) -> np.ndarray:
+        return self.__img_np_cyto2
+    
     @property
     def segment(self) -> list[segment]:
         def job():
@@ -951,7 +1010,6 @@ class abstract():
                 time.sleep(0.1)
 
         return self.__seg
-
 
     @segment.setter
     def segment(self, value: list[segment]):
@@ -1022,7 +1080,7 @@ class abstract():
                 ((x0 + x1) / 2, (y0 + y1) / 2)
                 for x0, y0, x1, y1 in nuc_boxes
             ]
-            cyto_boxes = self.gui.getBackEnd().AppIntDINOwrapperB(self.__img_np_cyto1, centers)
+            cyto_boxes = self.gui.getBackEnd().AppIntDINOwrapperB(self.__img_np_cyto, centers)
             self.__bbox = [box(b, self.gui) for b in cyto_boxes]
             self.bbox_generated = True
         return self.__bbox
@@ -1191,7 +1249,13 @@ class abstract():
     def getImgNumpyGreyscale(self) -> np.ndarray:
         return self.__img_np_nucleus
     def getImgNumpyRGB(self) -> np.ndarray:
-        return self.__img_np_rgb1 
+        if self.selected_channel == "647" and self.__img_np_647 is not None:
+            base = self.__img_np_647
+        elif self.selected_channel == "488" and self.__img_np_488 is not None:
+            base = self.__img_np_488
+        else:
+            base = self.__img_np_nucleus
+        return abstract.grayscale_to_rgb(base)
     def getLabel(self) -> tkinter.Label:
         return self.__label
     def getAbsPath(self) -> pathlib.Path:
@@ -1201,69 +1265,199 @@ class abstract():
     def noSegment(self) -> bool:
         return not len(self.__seg)
 
-# --------------------------------------
-# Watershed Segmentation Logic
-# --------------------------------------
+    # --------------------------------------
+    # Watershed Segmentation Logic
+    # --------------------------------------
     @staticmethod
-    def clahe(img, clip_limit=4.0, tile_size=(8, 8)):
-        c = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_size)
-        return c.apply(img)
+    def remove_outliers(img, k=20.0, use_median=False):
+        """
+        Clip values that are more than k std-dev (or MAD units) above center.
+        Args:
+            img: 16-bit numpy array
+            k: threshold (e.g. 3σ)
+            use_median: if True use median+MAD, else mean+std
+        Returns:
+            clipped float32 image in [0,1]
+        """
+        x = img.astype(np.float32)
+
+        if use_median:
+            med = np.median(x)
+            mad = np.median(np.abs(x - med)) + 1e-6
+            sigma = 1.4826 * mad  # robust std estimate
+            thresh = med + k * sigma
+        else:
+            mean = np.mean(x)
+            std = np.std(x)
+            thresh = mean + k * std
+
+        # clip outliers
+        x_clipped = np.minimum(x, thresh)
+
+        # normalize after clipping (to 0..1)
+        x_norm = (x_clipped - x_clipped.min()) / (x_clipped.max() - x_clipped.min() + 1e-6)
+        return x_norm
 
     @staticmethod
     def normalize_to_uint8(img):
         return cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    
+    @staticmethod
+    def clahe(img, clip_limit=4.0, tile_size=(8, 8)):
+        c = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_size)
+        return c.apply(img)
+    
+    @staticmethod
+    def gradient(img: np.ndarray, ksize: int = 5) -> np.ndarray:
+        kern = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ksize, ksize))
+        return cv2.morphologyEx(img, cv2.MORPH_GRADIENT, kern)
 
     @staticmethod
     def postproc_mask(m):
         m = morphology.remove_small_objects(m.astype(bool), min_size=200)
         m = morphology.binary_opening(m, footprint=morphology.disk(2))
         return m.astype(np.uint8)
+    
+    def mask_to_bbox(mask):
+        ys, xs = np.where(mask)
+        if len(xs) == 0 or len(ys) == 0:
+            return None
+        return (xs.min(), ys.min(), xs.max(), ys.max())
+    # --------------------------------------
+    # Stack-projection helpers
+    # --------------------------------------
 
-    @staticmethod
-    def watershed_segment(cyt_img: np.ndarray,
-                           centers: list[tuple[float, float]],
-                           thresh_method: str = "otsu",
-                           min_size: int = 300) -> list[np.ndarray]:
-        if thresh_method == "otsu":
-            thresh = filters.threshold_otsu(cyt_img)
-        else:
-            thresh = np.percentile(cyt_img, 30)
+    # TODO : delete if zprojection is applied
+    def preprocess_nucleus_stack(stack: np.ndarray) -> np.ndarray:
+        stack = stack[np.any(stack > 0, axis=(1, 2))]
+        # max projection
+        proj = np.max(stack, axis=0)
+        return cv2.normalize(proj, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
 
-        binary = cyt_img > thresh
-        binary = morphology.remove_small_holes(binary, area_threshold=1000)
+    # TODO : delete if zprojection is applied
+    def preprocess_cytoplasm_stack(stack: np.ndarray, top_n: int = 8) -> np.ndarray:
+        stack = stack[np.any(stack > 0, axis=(1, 2))]
+        scores = [cv2.Laplacian(s, cv2.CV_64F).var() for s in stack]
+        best_z = np.argsort(scores)[-top_n:]
+        best_z.sort()
+        proj = np.max(stack[best_z], axis=0)
+        proj_u8 = cv2.normalize(proj, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+        return cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8)).apply(proj_u8)
+
+    def watershed_segment_with_centers(cyt_img: np.ndarray,
+                                  centers: list[tuple[float,float]]
+                                 ) -> list[np.ndarray]:
+        # threshold & clean
+        thresh = filters.threshold_otsu(cyt_img)
+        binary = morphology.remove_small_holes(cyt_img > thresh, area_threshold=1000)
         binary = morphology.remove_small_objects(binary, min_size=1000)
-        dist = ndi.distance_transform_edt(binary)
+        dist   = ndi.distance_transform_edt(binary)
 
-        markers = np.zeros(cyt_img.shape, dtype=np.int32)
-        for idx, (cx, cy) in enumerate(centers, start=1):
+        # make markers from your nucleus centers
+        markers = np.zeros(cyt_img.shape, np.int32)
+        for i,(cx,cy) in enumerate(centers, start=1):
             xi, yi = int(round(cx)), int(round(cy))
-            if 0 <= yi < cyt_img.shape[0] and 0 <= xi < cyt_img.shape[1]:
-                markers[yi, xi] = idx
+            if 0<=yi<cyt_img.shape[0] and 0<=xi<cyt_img.shape[1]:
+                markers[yi,xi] = i
 
-        labels = segmentation.watershed(-dist, markers, mask=binary)
+        # use gradient as elevation
+        elev   = -dist + 5*filters.sobel(cyt_img)
+        labels = segmentation.watershed(elev, markers=markers, mask=binary)
+
+        # pull out each cell
         masks = []
-        for i in range(1, len(centers)+1):
-            cell = (labels == i)
-            cell = abstract.postproc_mask(cell)
-            masks.append(cell)
+        for lab in range(1, labels.max()+1):
+            m = (labels==lab)
+            if m.sum()>0: masks.append(abstract.postproc_mask(m))
         return masks
 
     def run_basic_watershed(self):
-        self.__seg = []
-        self.__segment_generated = False
-        nucleus = self.__img_np_nucleus
-        bbox_nucleus = self.gui.getBackEnd().AppIntDINOwrapper(nucleus)
-        centers = [((x1 + x2) / 2, (y1 + y2) / 2) for x1, y1, x2, y2 in bbox_nucleus]
+        nuc = self.__img_np_nucleus
+        boxes = self.gui.getBackEnd().AppIntDINOwrapper(nuc)
+        centers = [((x0 + x1) / 2, (y0 + y1) / 2) for x0, y0, x1, y1 in boxes]
 
-        masks = abstract.watershed_segment(self.__cyt_clahe, centers)
-        for m in masks:
-            if m.sum() > 0:
-                self.__seg.append(segment(self.gui, m))  
+        # process 647 first (cyto1), then 488 (cyto2)
+        for raw, chan in [(self.__img_np_cyto1, "647"),
+                        (self.__img_np_cyto2, "488")]:
+            if raw is None:
+                continue
+
+            img = abstract.normalize_to_uint8(raw)
+
+            if chan == "647":
+                # 647 pipeline: CLAHE + gradient
+                clahe = abstract.clahe(img, clip_limit=2.0, tile_size=(8,8))
+                grad  = abstract.gradient(clahe, ksize=5)
+                proc = clahe
+                rgb  = np.stack([clahe, clahe, grad], axis=-1)
+
+            else:  # chan == "488"
+                ch = abstract.normalize_to_uint8(raw)
+                cyt_clahe    = abstract.clahe(ch, clip_limit=4.0, tile_size=(8,8))
+
+                sigma_est = estimate_sigma(cyt_clahe, channel_axis=None, average_sigmas=True)
+                sigma_norm = sigma_est + 3.0
+                sigma_weak = sigma_est - 10.0
+
+                cyt_bilat = cv2.bilateralFilter(cyt_clahe, d=9, sigmaColor=sigma_norm, sigmaSpace=15, borderType=cv2.BORDER_REFLECT_101)
+                cyt_edge_preserved = cv2.edgePreservingFilter(cyt_clahe, flags=1, sigma_s=sigma_norm, sigma_r=0.4)
+                cyt_bilat_edge = cv2.edgePreservingFilter(cyt_bilat, flags=1, sigma_s=sigma_weak, sigma_r=0.4)
+
+                laplacian = cv2.Laplacian(ch, cv2.CV_64F)
+                laplacian = cv2.convertScaleAbs(laplacian)
+                cyt_blended = cv2.addWeighted(cyt_bilat, 0.8, laplacian, 0.2, 0)
+
+                # 5) choose which pre-proc to feed to watershed
+                proc = cyt_bilat_edge
+                rgb  = np.stack([cyt_blended, cyt_bilat, cyt_edge_preserved], axis=-1)
+
+            # 2) classical watershed to get rough masks
+            ws_masks = abstract.watershed_segment_with_centers(proc, centers)
+
+            # 3) convert to bboxes and refine with SAM 
+            bboxes = [abstract.mask_to_bbox(m) for m in ws_masks]
+            bboxes = [b for b in bboxes if b is not None]
+
+            channel_masks = []
+            for bb in bboxes:
+                try:
+                    # Create properly nested box structure for SAM: [[[x1,y1,x2,y2]]]
+                    box_input = [[[float(bb[0]), float(bb[1]), float(bb[2]), float(bb[3])]]]
+                    
+                    sets = self.gui.getBackEnd().finetune.AppIntPREDICTCytoplasmWrapper(rgb, box_input)
+                    # Robust check for numpy arrays
+                    if sets is not None and len(sets) > 0 and sets[0] is not None and len(sets[0]) > 0:
+                        best = max(sets[0], key=lambda m: m.sum())
+                        channel_masks.append(abstract.postproc_mask(best))
+                except Exception as e:
+                    logger.error(f"SAM refine failed on {chan} box {bb}: {str(e)}")
+            if chan == "647":
+                self.__seg_647 = [segment(self.gui, m) for m in channel_masks]
+            else:
+                self.__seg_488 = [segment(self.gui, m) for m in channel_masks]
+        # Set current seg list to selected channel
+        self.__seg = self.__seg_647 if self.selected_channel == "647" else self.__seg_488
+        self.__segment_generated = True
+        logger.info(f"Generated {len(self.__seg)} final segments ({self.selected_channel})")
+
+
+
+    # def run_basic_watershed(self):
+    #     self.__seg = []
+    #     self.__segment_generated = False
+    #     nucleus = self.__img_np_nucleus
+    #     bbox_nucleus = self.gui.getBackEnd().AppIntDINOwrapper(nucleus)
+    #     centers = [((x1 + x2) / 2, (y1 + y2) / 2) for x1, y1, x2, y2 in bbox_nucleus]
+
+    #     masks = abstract.watershed_segment(self.__cyt_clahe, centers)
+    #     for m in masks:
+    #         if m.sum() > 0:
+    #             self.__seg.append(segment(self.gui, m))  
         
-        print(f"  → Created {len(masks)} raw masks, appended {len(self.__seg)} segment objects")
-        for idx, seg_obj in enumerate(self.__seg, start=1):
-            print(f"    Mask #{idx}: shape={seg_obj._segment__data.shape}, "
-                f"sum(pixels)={(seg_obj._segment__data>0).sum()}")
+    #     print(f"  → Created {len(masks)} raw masks, appended {len(self.__seg)} segment objects")
+    #     for idx, seg_obj in enumerate(self.__seg, start=1):
+    #         print(f"    Mask #{idx}: shape={seg_obj._segment__data.shape}, "
+    #             f"sum(pixels)={(seg_obj._segment__data>0).sum()}")
             
 class tifSequence():
     def __init__(self, gui: FishGUI):
@@ -1306,10 +1500,94 @@ class tifSequence():
         self.scrollbar.pack_forget()
     
     def addToGallery(self, tif_files: list[pathlib.Path]):
+        logger.debug(f"addToGallery → starting with {len(tif_files)} files")
+        grouped: dict[str, dict[str, pathlib.Path]] = {}
+
         for path in tif_files:
-            abs = abstract(path, self.gallery_frame, self.gui)
-        abstract.sendFirst()
+            stem = path.stem
+            pos = re.search(r"s(\d{1,4})", stem, re.IGNORECASE)
+            chan = re.search(r"w[-_]?(?:.*?)?(DAPI|488|647)", stem, re.IGNORECASE)
+            if not (pos and chan):
+                logger.warning(f"addToGallery → skipping {stem!r}, couldn’t parse s### or w###")
+                continue
+
+            logger.debug(f"addToGallery → considering file {stem!r}: "
+                        f"pos_match={pos.group(1) if pos else None}, "
+                        f"chan_match={(chan.group(1).upper() if chan else None)}")
+
+            if not (pos and chan):
+                logger.warning(f"addToGallery → skipping {stem!r}, couldn’t parse s### or w###")
+                continue
+
+            sample_id = pos.group(1)
+            wavelength = chan.group(1).upper()
+            grouped.setdefault(sample_id, {})[wavelength] = path
+
+        logger.debug(f"addToGallery → grouped into samples: {list(grouped.keys())}")
+
+        for sample_id, channels in grouped.items():
+            logger.debug(f"addToGallery → sample {sample_id} channels: {channels}")
+            nucleus_path = channels.get("DAPI")
+            if nucleus_path is None:
+                logger.warning(f"addToGallery → sample {sample_id} has no DAPI, skipping")
+                continue
+
+            cyto_paths: list[pathlib.Path] = []
+            if "647" in channels:
+                cyto_paths.append(channels["647"])
+            if "488" in channels:
+                cyto_paths.append(channels["488"])
+
+            logger.info(f"addToGallery → instantiating abstract for sample {sample_id}")
+            abs = abstract(
+                sample_id,
+                nucleus_path,
+                cyto_paths,
+                self.gallery_frame,
+                self.gui
+            )
+            self.gui.getSeasoning().update_channel_menu(abs.available_channels)
+            abstract.sendFirst()
+
         self.update_scrollregion()
+    # def addToGallery(self, tif_files: list[pathlib.Path]):
+    #     grouped: dict[str, dict[str, pathlib.Path]] = {}
+    #     for path in tif_files:
+    #         stem = path.stem
+    #         position_number = re.search(r"s(\d+)", stem, re.IGNORECASE)
+    #         channel_type = re.search(r"w(\d{3}|DAPI)", stem, re.IGNORECASE)
+
+    #         if not (position_number and channel_type): # CHECK - ensure that filename will always consist both values
+    #             continue  
+
+    #         sample_id = position_number.group(1)        
+    #         wavelength_number = channel_type.group(1).upper()   
+
+    #         grouped.setdefault(sample_id, {})[wavelength_number] = path
+            
+    #     for sample_id, channels in grouped.items():
+    #         nucleus_path = channels.get("DAPI")
+    #         if nucleus_path is None:
+    #             continue
+
+    #         cyto_paths: list[pathlib.Path] = []
+    #         if "647" in channels:
+    #             cyto_paths.append(channels["647"])
+    #         if "488" in channels:
+    #             cyto_paths.append(channels["488"])
+
+    #         # logging purpose - delete later 
+    #         if "647" in channels:
+    #             chosen_channel = "647"
+    #         elif "488" in channels:
+    #             chosen_channel = "488"
+    #         else:
+    #             chosen_channel = None
+    #         print(f"[INFO] Sample {sample_id}: Using channel {chosen_channel} for cytoplasm segmentation")
+
+    #         abs = abstract(sample_id, nucleus_path, cyto_paths, self.gallery_frame, self.gui)
+    #         abstract.sendFirst()
+    #     self.update_scrollregion()
     
     def resetPosition(self):
         self.base.xview_moveto(0)
@@ -1328,6 +1606,7 @@ class funcButton():
                                      height=2,
                                      relief=tkinter.RAISED,
                                      command=self.IMPORT_call)
+
         self.SELECT = tkinter.Checkbutton(container,
                                           text="Select",
                                           height=2,
@@ -1389,18 +1668,44 @@ class funcButton():
     def segButtonPressed(self) -> bool:
         return self.toggle["SEGMENT"].get()
     
+    # def IMPORT_call(self):
+    #     folder_path = filedialog.askdirectory()
+    #     if folder_path:
+    #         folder = pathlib.Path(folder_path)
+    #         tif_files = [file.resolve() for file in folder.glob("*.tif")] # CHECK 
+    #         self.gui.getTifSequence().addToGallery(tif_files)
+    #         pool = abstract.getPool()
+    #         if len(pool) == 0:
+    #             FishGUI.popBox("w", "No Image", "No image is available")
+    #             return
+    #         progress.generateBbox(self.gui, abstracts=pool)
+
     def IMPORT_call(self):
         folder_path = filedialog.askdirectory()
-        if folder_path:
-            folder = pathlib.Path(folder_path)
-            tif_files = [str(file.resolve()) for file in folder.glob("*.tif")]
-            self.gui.getTifSequence().addToGallery(tif_files)
-            pool = abstract.getPool()
-            if len(pool) == 0:
-                FishGUI.popBox("w", "No Image", "No image is available")
-                return
-            progress.generateBbox(self.gui, abstracts=pool)
+        logger.debug(f"IMPORT_call → user picked folder: {folder_path!r}")
+        if not folder_path:
+            logger.debug("IMPORT_call → no folder selected, exiting.")
+            return
 
+        folder = pathlib.Path(folder_path)
+        tif_files = [file.resolve() for file in folder.glob("*.tif")]
+        logger.debug(f"IMPORT_call → found {len(tif_files)} .tif files: {tif_files}")
+
+        try:
+            self.gui.getTifSequence().addToGallery(tif_files)
+
+        except Exception as e:
+            logger.exception("IMPORT_call → addToGallery raised exception")
+            FishGUI.popBox("e", "Import Error", str(e))
+            return
+
+        pool = abstract.getPool()
+        logger.debug(f"IMPORT_call → abstract pool size after addToGallery: {len(pool)}")
+        if len(pool) == 0:
+            FishGUI.popBox("w", "No Image", "No image is available")
+            return
+
+        progress.generateBbox(self.gui, abstracts=pool)
     def SELECT_call(self):
         if self.selectButtonPressed():
             abstract.selectAll()
@@ -1409,6 +1714,7 @@ class funcButton():
             self.gui.getTifSequence().resetPosition()
             for abs in abstract.getPool():
                 abs.thumbnail = "bbox" if abs.bbox_generated else "default"
+
     
     def BBOX_call(self):
         if not self.gui.getStove().isLoaded():
@@ -1461,7 +1767,8 @@ class funcButton():
 
 class lf():
     def __init__(self, gui: FishGUI):
-        self.__a = tkinter.Frame(gui.getRoot())
+        self.__a = tkinter.Frame(gui.getRoot(), height=100) # Shizuka
+        self.__a.pack_propagate(False)  # Shizuka
         self.__s = tkinter.Frame(gui.getRoot(), height=1, bd=0, relief=tkinter.SUNKEN, bg="black")
         self.__b = tkinter.Frame(gui.getRoot(), padx=5, pady=5)
         self.__c = tkinter.Frame(gui.getRoot(), padx=5, pady=5)
@@ -1489,7 +1796,7 @@ class FishGUI(object):
         try:
             self.__root: tkinter.Tk = root
             self.__root.title("FISH UI Multichannel Prototype")
-            self.__root.geometry("870x1000")
+            self.__root.geometry("870x1000") 
 
             print("Creating backend")
             self.__be: fishCore.Fish = fishCore.Fish(pathlib.Path("./config.ini"))
@@ -1566,6 +1873,7 @@ class FishGUI(object):
     def getRoot(self) -> tkinter.Tk:
         return self.__root
         
+
 if __name__ == "__main__":
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     root = tkinter.Tk()
