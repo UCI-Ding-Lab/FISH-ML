@@ -68,6 +68,10 @@ class stove():
         self.setLoaded(abs)
         self.ax_img = self.subplot.imshow(self.getLoaded().getImgNumpyRGB())
         self.subplot.set_axis_off()
+        # Draw segmentation masks for the current channel - abs.seg is the getter for the private variable current_channel_mask 
+        if hasattr(abs, "seg"):
+            for seg in abs.seg:
+                seg.draw = True  
         self.canvas.draw()
 
     def dump(self):

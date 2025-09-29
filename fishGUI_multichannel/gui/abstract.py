@@ -16,6 +16,7 @@ from ..utils.image_preprocessing import (
     remove_outliers
 )
 from ..services.segmentation import run_basic_watershed
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -245,6 +246,14 @@ class abstract():
             self.__current_channel_mask = seg_647 if self.selected_channel == "647" else seg_488 # TODO check - is this to identify which mask to draw on gui?
             self.segment_generated = True
             logger.info(f"Generated {len(self.__current_channel_mask)} final segments ({self.selected_channel})")
+            if len(seg_647) != len(seg_488):
+                logger.info("Segmentation mask counts are different between channels.")
+                logger.info(f"647: {len(seg_647)}")
+                logger.info(f"488: {len(seg_488)}")
+            else:
+                same = all(np.array_equal(a._segment__data, b._segment__data) for a, b in zip(seg_647, seg_488))
+                logger.info(f"Segmentation masks are {'the same' if same else 'different'} between channels.")
+
             self.gui.getRoot().after(0, self.gui.dismissWait) # runs after the segemntation is finished. It safely closes the wait dialog
         
         # --- Main logic ---
@@ -263,10 +272,10 @@ class abstract():
 
         return self.__current_channel_mask
     
-    # TODO check where these methods are used and why it is necessary
+    # TODO check where these methods are used and why it is necessary -- update: used in tools_pannels.py, on_channel_change
     @segment.setter
     def segment(self, value):
-        self.__current_channel = value
+        self.__current_channel_mask = value
         self.segment_generated = True if value else False
 
     @segment.deleter
@@ -441,12 +450,11 @@ class abstract():
                 ImageDraw.Draw(self.__img_pil_thumbnail_segmented).ellipse((49, 20, 59, 30), fill=(255, 165, 0))
                 self.__img_tk_thumbnail_segmented = ImageTk.PhotoImage(self.__img_pil_thumbnail_segmented)
             self.getLabel().config(image=self.__img_tk_thumbnail_segmented)
-        elif value == "segmentation_selected_and_segmented":
+        elif value == "segmentation_selected_and_segmented": # TODO unnecessary? same as "segmented"
             if not self.__img_tk_thumbnail_selected_and_segmented: 
-                self.__img_tk_thumbnail_selected_and_segmented = self.__img_pil_thumbnail.copy()
-                ImageDraw.Draw(self.__img_tk_thumbnail_selected_and_segmented).ellipse((49, 5, 59, 15), fill=(0,0,255))
-                ImageDraw.Draw(self.__img_tk_thumbnail_selected_and_segmented).ellipse((49, 20, 59, 30), fill=(255, 165, 0))
-                self.__img_tk_thumbnail_selected_and_segmented = ImageTk.PhotoImage(self.__img_tk_thumbnail_selected_and_segmented)
+                self.__img_pil_thumbnail_selected_and_segmented = self.__img_pil_thumbnail_bbox.copy()
+                ImageDraw.Draw(self.__img_pil_thumbnail_selected_and_segmented).ellipse((49, 20, 59, 30), fill=(255, 165, 0))
+                self.__img_tk_thumbnail_selected_and_segmented = ImageTk.PhotoImage(self.__img_pil_thumbnail_selected_and_segmented)
             self.getLabel().config(image=self.__img_tk_thumbnail_selected_and_segmented)
 
     @thumbnail.deleter
@@ -454,7 +462,27 @@ class abstract():
         self.getLabel().pack_forget()
 
     def update_thumbnail(self):
-    # Priority: segmented & selected > segmented > selected > bbox > default
+        # Always rebuild the base thumbnail from the selected channel
+        base_img = None
+        if self.selected_channel == "647" and self.__img_np_647 is not None:
+            base_img = self.__img_np_647
+        elif self.selected_channel == "488" and self.__img_np_488 is not None:
+            base_img = self.__img_np_488
+        else:
+            base_img = self.__img_np_nucleus
+
+        self.__img_np_rgb = grayscale_to_rgb(base_img)
+        self.__img_pil_thumbnail = Image.fromarray(self.__img_np_rgb).resize((64, 64))
+        self.__img_tk_thumbnail = ImageTk.PhotoImage(self.__img_pil_thumbnail)
+
+        # Clear cached overlays so they are rebuilt for the new channel
+        self.__img_pil_thumbnail_segmented = None
+        self.__img_pil_thumbnail_segmentation_selected = None
+        self.__img_pil_thumbnail_selected_and_segmented = None
+        self.__img_tk_thumbnail_segmented = None
+        self.__img_tk_thumbnail_segmentation_selected = None
+        self.__img_tk_thumbnail_selected_and_segmented = None
+        
         if self.bbox_generated:
             if self.selected_for_segmentation:
                 if self.segment_generated:

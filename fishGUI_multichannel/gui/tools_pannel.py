@@ -185,41 +185,27 @@ class seasoning():
         threading.Thread(target=job, daemon=True).start()
 
     def on_channel_change(self, new_chan: str):
-        from PIL import Image, ImageTk
-        
-        # Update the channel variable to reflect the change in the UI
+        """
+        - point seg to the right mask list
+        - refresh thumbnail
+        - redraw main canvas with updated mask and image
+        """
         self.channel_var.set(new_chan)
         
         abs_obj = self.gui.getStove().getLoaded()
         if not abs_obj:
             return
 
-        # turn off old overlays
         abs_obj.drawSegmentation = False
 
-        # update the pointer
+        # select channel and sync mask pointer
         abs_obj.selected_channel = new_chan
-        abs_obj._abstract__seg = (
-            abs_obj._abstract__seg_647
-            if new_chan == "647"
-            else abs_obj._abstract__seg_488
-        )
-        abs_obj._abstract__img_np_cyto = (
-            abs_obj._abstract__img_np_647
-            if new_chan == "647"
-            else abs_obj._abstract__img_np_488
-        )
+        abs_obj.seg = abs_obj._get_seg_list_for_channel(new_chan)
 
-        # Update the main canvas
-        abs_obj._abstract__img_np_rgb = grayscale_to_rgb(abs_obj._abstract__img_np_cyto)
+        # let abstract rebuild the image and thumbnails
+        abs_obj.update_thumbnail()
 
-        # rebuild the thumbnail
-        rgb = grayscale_to_rgb(abs_obj._abstract__img_np_cyto)
-        abs_obj._abstract__img_pil_thumbnail = Image.fromarray(rgb).resize((64, 64))
-        abs_obj._abstract__img_tk_thumbnail = ImageTk.PhotoImage(abs_obj._abstract__img_pil_thumbnail)
-        abs_obj.getLabel().config(image=abs_obj._abstract__img_tk_thumbnail)
-
-        # redraw everything
+        # redraw canvas with new channel + masks
         self.gui.getStove().cook(abs_obj)
         abs_obj.drawSegmentation = True
 
@@ -249,5 +235,5 @@ class seasoning():
         return True
     
     def update_channel_selector_for_image(self, abs_obj):
-        # Set the OptionMenu to match the current image's selected channel
+        # Set the OptionMenu to match the current image's selected channel - used in abstract.py
         self.channel_var.set(abs_obj.selected_channel)

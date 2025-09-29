@@ -58,6 +58,7 @@ def run_basic_watershed(
     centers = [((x0 + x1) / 2, (y0 + y1) / 2) for x0, y0, x1, y1 in boxes]
 
     # process 647 first (cyto1), then 488 (cyto2)
+    # TODO - O(n^2) -- consider improving time complexity
     seg_647, seg_488 = [], []
     for image, channel in [(cyto_647, "647"), (cyto_488, "488")]:
         if image is None:
@@ -111,7 +112,7 @@ def run_basic_watershed(
         else:
             seg_488 = [segment(gui, m) for m in channel_masks]
         
-        return seg_647, seg_488
+    return seg_647, seg_488
 
 
 # TODO remove if unnecessary
